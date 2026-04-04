@@ -1,0 +1,6 @@
+# Speeds Vercel uploads; not needed for `npm run build` (UI + API bundle)
+desktop/
+release/
+dist/
+*.exe
+*.zip

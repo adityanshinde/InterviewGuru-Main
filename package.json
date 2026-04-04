@@ -1,0 +1,99 @@
+{
+  "name": "interviewguru",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "main": "desktop/main/main.cjs",
+  "scripts": {
+    "dev": "tsx watch backend/api/server.ts",
+    "start": "tsx backend/api/server.ts",
+    "build:ui": "vite build",
+    "build:server": "tsup",
+    "build": "npm run build:ui && npm run build:server",
+    "preview": "vite preview",
+    "clean": "powershell -Command \"Remove-Item -Recurse -Force -ErrorAction SilentlyContinue build,dist,release,server.cjs,backend/api/server.cjs\"",
+    "lint": "tsc --noEmit",
+    "db:migrate": "node scripts/run-db-migrate.mjs up",
+    "db:migrate:down": "node scripts/run-db-migrate.mjs down",
+    "db:migrate:create": "node scripts/run-db-migrate.mjs create -j js",
+    "electron:dev": "node desktop/main/dev-launcher.cjs",
+    "predist": "taskkill /F /IM InterviewGuru.exe 2>nul || exit 0",
+    "dist": "npm run build && electron-builder"
+  },
+  "build": {
+    "appId": "com.interviewguru.app",
+    "productName": "InterviewGuru",
+    "npmRebuild": false,
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "assets/icons/win/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "InterviewGuru"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "adityanshinde",
+        "repo": "Parakeet-AI-Clone"
+      }
+    ],
+    "files": [
+      "build/**/*",
+      "backend/**/*",
+      "desktop/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "desktop/main/main.cjs"
+    }
+  },
+  "dependencies": {
+    "@clerk/clerk-react": "^5.61.4",
+    "@clerk/express": "^2.0.8",
+    "@google/genai": "^1.29.0",
+    "@tailwindcss/vite": "^4.1.14",
+    "@vitejs/plugin-react": "^5.0.4",
+    "@xenova/transformers": "^2.17.2",
+    "clsx": "^2.1.1",
+    "dotenv": "^17.2.3",
+    "electron-updater": "^6.8.3",
+    "express": "^4.22.1",
+    "express-rate-limit": "^8.3.2",
+    "groq-sdk": "^1.1.1",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "pg": "^8.20.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.13.1",
+    "tailwind-merge": "^3.5.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.25",
+    "@types/node": "^22.14.0",
+    "@types/pg": "^8.20.0",
+    "@vercel/node": "^5.6.22",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^9.2.1",
+    "electron": "^41.0.0",
+    "electron-builder": "^26.8.1",
+    "node-pg-migrate": "^8.0.4",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0",
+    "wait-on": "^9.0.4"
+  }
+}
