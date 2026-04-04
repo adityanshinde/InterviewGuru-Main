@@ -764,7 +764,7 @@ Rules:
       }
 
       resetMonthlyUsageIfNeeded(user);
-      const planConfig = PLAN_LIMITS[user.plan];
+      const planConfig = PLAN_LIMITS[user.plan] ?? PLAN_LIMITS.free;
 
       const response = {
         user: {
