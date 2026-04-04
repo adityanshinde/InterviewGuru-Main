@@ -14,3 +14,8 @@ coverage/
 
 # Bundled Express entry for Electron (run `npm run build:server` after clone)
 backend/api/server.cjs
+
+# Never commit OAuth / Google credential JSON (GitHub push protection will block)
+docs/Google Auth File.json
+**/*Google*Auth*.json
+**/client_secret*.json
