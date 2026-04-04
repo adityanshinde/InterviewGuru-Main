@@ -84,3 +84,18 @@ export async function closeDatabase(): Promise<void> {
 		pool = null;
 	}
 }
+
+let initOnce: Promise<void> | null = null;
+
+/**
+ * Await once before handling traffic so `pool` is set (or init failed definitively).
+ * Fixes Vercel/serverless races where `/api` ran before fire-and-forget `initializeDatabase` finished.
+ */
+export function waitForDatabase(): Promise<void> {
+	if (!initOnce) {
+		initOnce = initializeDatabase().catch((e) => {
+			console.error('[DB] Initialization failed (continuing without Postgres):', e);
+		});
+	}
+	return initOnce;
+}

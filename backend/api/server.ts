@@ -26,7 +26,7 @@ import {
 } from '../storage/usageStorage';
 import { PLAN_LIMITS } from '../../shared/constants/planLimits';
 import { AuthRequest } from '../../shared/types';
-import { initializeDatabase } from '../services/database';
+import { waitForDatabase } from '../services/database';
 import {
   buildAnswerConfidencePrompt,
   buildAnswerVerificationPrompt,
@@ -91,22 +91,20 @@ function extractJSON(content: string): any {
 dotenv.config();
 dotenv.config({ path: path.join(__dirname, '../.env'), override: true });
 
-// Initialize database connection pool on startup (non-blocking; failures → in-memory usage)
-console.log('[Server] Initializing database pool...');
-void initializeDatabase().catch((e) => {
-  console.error('[Server] Database init failed — continuing without Postgres', e);
-});
-console.log('[Server] Database pool init scheduled');
-
 let serverStarted = false;
 
 export async function startServer(): Promise<number | express.Express> {
   // Prevent multiple server instances from starting
   if (serverStarted) {
     console.log('[Server] ℹ️  Server already started');
+    await waitForDatabase();
     return parseInt(process.env.PORT || '3000');
   }
   serverStarted = true;
+
+  console.log('[Server] Initializing database pool...');
+  await waitForDatabase();
+  console.log('[Server] Database pool init finished');
 
   const app = express();
   let initialPort = process.env.PORT ? parseInt(process.env.PORT) : 3000;
