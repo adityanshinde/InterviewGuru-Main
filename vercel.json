@@ -2,6 +2,11 @@
   "version": 2,
   "buildCommand": "npm run build",
   "outputDirectory": "build",
+  "functions": {
+    "api/[...path].ts": {
+      "includeFiles": "backend/api/server.cjs"
+    }
+  },
   "rewrites": [
     {
       "source": "/api/:path*",

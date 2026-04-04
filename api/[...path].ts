@@ -1,5 +1,12 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { serverBootstrap } from '../backend/api/server';
+import type { Application } from 'express';
+import { createRequire } from 'node:module';
+
+// Vercel emits ESM here; `server.ts` is not a loadable module at runtime. Load the tsup output from `npm run build`.
+const require = createRequire(import.meta.url);
+const { serverBootstrap } = require('../backend/api/server.cjs') as {
+  serverBootstrap: Promise<Application | number>;
+};
 
 export default async function handler(req: VercelRequest, res: VercelResponse): Promise<void> {
   const resolved = await serverBootstrap;

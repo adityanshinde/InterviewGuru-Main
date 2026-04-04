@@ -7,7 +7,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// tsup CJS bundle clears import.meta.url; tsx ESM has a real file: URL. Fallback keeps dotenv/build paths correct on Vercel.
+const metaUrl = import.meta.url;
+const __dirname =
+  typeof metaUrl === 'string' && metaUrl.startsWith('file:')
+    ? path.dirname(fileURLToPath(metaUrl))
+    : path.join(process.cwd(), 'backend', 'api');
 import { authMiddleware, clerkAuthMiddleware, quotaMiddleware } from '../middleware/authMiddleware';
 import { apiBurstLimiter } from '../middleware/rateLimiter';
 import {
