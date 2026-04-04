@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { SignedIn, SignedOut } from '@clerk/clerk-react';
+import { ModalSignInButton, ModalSignUpButton } from '../components/ClerkModalAuthButtons';
 import './LandingPage.css';
 
 const clerkUiEnabled = !!import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -200,12 +201,16 @@ export default function LandingPage() {
 						</SignedIn>
 						<SignedOut>
 							<div className="flex items-center gap-2 flex-wrap justify-end">
-								<Link to="/sign-in" className="sticky-cta-btn opacity-90 hover:opacity-100">
-									Sign in
-								</Link>
-								<Link to="/sign-up" className="sticky-cta-btn">
-									Sign up
-								</Link>
+								<ModalSignInButton>
+									<button type="button" className="sticky-cta-btn opacity-90 hover:opacity-100">
+										Sign in
+									</button>
+								</ModalSignInButton>
+								<ModalSignUpButton>
+									<button type="button" className="sticky-cta-btn">
+										Sign up
+									</button>
+								</ModalSignUpButton>
 							</div>
 						</SignedOut>
 					</>
@@ -248,12 +253,16 @@ export default function LandingPage() {
 									</button>
 								</SignedIn>
 								<SignedOut>
-									<Link to="/sign-in" className="nav-btn-outline cursor-pointer inline-flex items-center justify-center no-underline">
-										Sign in
-									</Link>
-									<Link to="/sign-up" className="nav-cta-button cursor-pointer inline-flex items-center justify-center no-underline">
-										Sign up
-									</Link>
+									<ModalSignInButton>
+										<button type="button" className="nav-btn-outline cursor-pointer inline-flex items-center justify-center">
+											Sign in
+										</button>
+									</ModalSignInButton>
+									<ModalSignUpButton>
+										<button type="button" className="nav-cta-button cursor-pointer inline-flex items-center justify-center">
+											Sign up
+										</button>
+									</ModalSignUpButton>
 								</SignedOut>
 							</>
 						)}
@@ -280,8 +289,24 @@ export default function LandingPage() {
 					{clerkUiEnabled && (
 						<>
 							<SignedOut>
-								<Link to="/sign-in" onClick={() => setMobileMenuOpen(false)}>Sign in</Link>
-								<Link to="/sign-up" onClick={() => setMobileMenuOpen(false)}>Sign up</Link>
+								<ModalSignInButton>
+									<button
+										type="button"
+										className="mobile-nav-action"
+										onClick={() => setMobileMenuOpen(false)}
+									>
+										Sign in
+									</button>
+								</ModalSignInButton>
+								<ModalSignUpButton>
+									<button
+										type="button"
+										className="mobile-nav-action"
+										onClick={() => setMobileMenuOpen(false)}
+									>
+										Sign up
+									</button>
+								</ModalSignUpButton>
 							</SignedOut>
 							<SignedIn>
 								<button type="button" className="text-left bg-transparent border-0 p-0 font-inherit cursor-pointer" onClick={() => { setMobileMenuOpen(false); navigate('/app'); }}>
@@ -352,12 +377,16 @@ export default function LandingPage() {
 										</a>
 									</SignedIn>
 									<SignedOut>
-										<Link to="/sign-up" className="btn btn-primary btn-glow cursor-pointer no-underline inline-flex items-center justify-center">
-											Sign up
-										</Link>
-										<Link to="/sign-in" className="btn btn-secondary no-underline inline-flex items-center justify-center">
-											Sign in
-										</Link>
+										<ModalSignUpButton>
+											<button type="button" className="btn btn-primary btn-glow cursor-pointer inline-flex items-center justify-center">
+												Sign up
+											</button>
+										</ModalSignUpButton>
+										<ModalSignInButton>
+											<button type="button" className="btn btn-secondary cursor-pointer inline-flex items-center justify-center">
+												Sign in
+											</button>
+										</ModalSignInButton>
 										<a href="#demo" className="btn btn-secondary">
 											▶ Watch Live Demo
 										</a>
@@ -585,9 +614,15 @@ export default function LandingPage() {
 										</button>
 									</SignedIn>
 									<SignedOut>
-										<Link to="/sign-up" className="btn btn-secondary no-underline inline-flex items-center justify-center" style={{ width: '100%' }}>
-											Get Started Free
-										</Link>
+										<ModalSignUpButton>
+											<button
+												type="button"
+												className="btn btn-secondary cursor-pointer inline-flex items-center justify-center"
+												style={{ width: '100%' }}
+											>
+												Get Started Free
+											</button>
+										</ModalSignUpButton>
 									</SignedOut>
 								</>
 							)}
@@ -654,13 +689,15 @@ export default function LandingPage() {
 										</button>
 									</SignedIn>
 									<SignedOut>
-										<Link
-											to="/sign-up"
-											className="btn btn-primary btn-glow no-underline inline-flex items-center justify-center"
-											style={{ width: '100%' }}
-										>
-											🚀 Sign up free
-										</Link>
+										<ModalSignUpButton>
+											<button
+												type="button"
+												className="btn btn-primary btn-glow cursor-pointer inline-flex items-center justify-center"
+												style={{ width: '100%' }}
+											>
+												🚀 Sign up free
+											</button>
+										</ModalSignUpButton>
 									</SignedOut>
 								</>
 							)}
@@ -753,12 +790,22 @@ export default function LandingPage() {
 						</SignedIn>
 						<SignedOut>
 							<div className="flex gap-2 w-full">
-								<Link to="/sign-in" className="btn btn-secondary no-underline flex-1 text-center inline-flex items-center justify-center">
-									Sign in
-								</Link>
-								<Link to="/sign-up" className="btn btn-primary btn-glow no-underline flex-1 text-center inline-flex items-center justify-center">
-									Sign up
-								</Link>
+								<ModalSignInButton>
+									<button
+										type="button"
+										className="btn btn-secondary flex-1 text-center inline-flex items-center justify-center"
+									>
+										Sign in
+									</button>
+								</ModalSignInButton>
+								<ModalSignUpButton>
+									<button
+										type="button"
+										className="btn btn-primary btn-glow flex-1 text-center inline-flex items-center justify-center"
+									>
+										Sign up
+									</button>
+								</ModalSignUpButton>
 							</div>
 						</SignedOut>
 					</>

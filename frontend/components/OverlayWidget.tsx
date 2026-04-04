@@ -12,6 +12,7 @@ import { useSessionTracking } from '../hooks/useSessionTracking';
 import { UsageBar } from './UsageBar';
 import { PlanBanner } from './PlanBanner';
 import { API_ENDPOINT } from '../../shared/utils/config';
+import { optionalGroqApiKeyHeaders } from '../utils/optionalGroqApiKeyHeaders';
 import { useApiAuthHeaders } from '../providers/ApiAuthContext';
 import { UserButton } from '@clerk/clerk-react';
 
@@ -564,8 +565,8 @@ export default function OverlayWidget() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key': apiKey,
           Accept: 'application/json',
+          ...optionalGroqApiKeyHeaders(),
           ...auth,
         },
         body: JSON.stringify({ jd, resume })

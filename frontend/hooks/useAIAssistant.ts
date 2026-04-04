@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, Modality } from "@google/genai";
 import { API_ENDPOINT } from '../../shared/utils/config';
+import { optionalGroqApiKeyHeaders } from '../utils/optionalGroqApiKeyHeaders';
 import { buildSpeechPrompt } from '../../shared/prompts';
 import { useApiAuthHeaders } from '../providers/ApiAuthContext';
 
@@ -142,7 +143,6 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 			try {
 				setIsProcessing(true);
 				lastProcessedTextRef.current = currentText;
-				const apiKey = localStorage.getItem('groq_api_key') || '';
 				const model = localStorage.getItem('groq_model') || 'llama-3.1-8b-instant';
 				const persona = localStorage.getItem('groq_persona') || 'Technical Interviewer';
 				const resume = localStorage.getItem('groq_resume') || '';
@@ -153,10 +153,10 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
-						'x-api-key': apiKey,
 						'x-model': model,
 						'x-persona': persona,
 						Accept: 'application/json',
+						...optionalGroqApiKeyHeaders(),
 						...auth,
 					},
 					body: JSON.stringify({
@@ -229,7 +229,6 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 		try {
 			setIsProcessing(true);
 
-			const apiKey = localStorage.getItem('groq_api_key') || '';
 			const model = localStorage.getItem('groq_model') || 'llama-3.1-8b-instant';
 			const persona = localStorage.getItem('groq_persona') || 'Technical Interviewer';
 			const resume = localStorage.getItem('groq_resume') || '';
@@ -240,11 +239,11 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
-					'x-api-key': apiKey,
 					'x-model': model,
 					'x-persona': persona,
 					'x-mode': 'chat',
 					Accept: 'application/json',
+					...optionalGroqApiKeyHeaders(),
 					...auth,
 				},
 				body: JSON.stringify({ transcript: questionText, resume, jd })

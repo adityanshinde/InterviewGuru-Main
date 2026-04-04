@@ -7,7 +7,8 @@ import OverlayWidget from '@frontend/components/OverlayWidget';
 import LandingPage from '@frontend/pages/LandingPage';
 import { Documentation, ApiReference, Blog, FAQ, PrivacyPolicy, TermsOfService, Security, ContactPage } from '@frontend/pages/FooterPages';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { SignedIn, SignedOut, RedirectToSignIn, SignIn, SignUp } from '@clerk/clerk-react';
+import { SignedIn, SignedOut, SignIn, SignUp } from '@clerk/clerk-react';
+import AppSignInGate from '@frontend/components/AppSignInGate';
 
 import { useEffect } from 'react';
 
@@ -63,7 +64,7 @@ export default function App() {
                   <OverlayWidget />
                 </SignedIn>
                 <SignedOut>
-                  <RedirectToSignIn />
+                  <AppSignInGate />
                 </SignedOut>
               </>
             ) : (

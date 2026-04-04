@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
 import { API_ENDPOINT } from '../../shared/utils/config';
+import { optionalGroqApiKeyHeaders } from '../utils/optionalGroqApiKeyHeaders';
 import { useApiAuthHeaders } from '../providers/ApiAuthContext';
 
 function clampChunkMs(raw: number): number {
@@ -150,7 +151,6 @@ export function useTabAudioCapture(onTranscriptUpdate: (text: string) => void, o
 							const mimeType = recorder.mimeType || 'audio/webm';
 
 							try {
-								const apiKey = localStorage.getItem('groq_api_key') || '';
 								const voiceModel = localStorage.getItem('groq_voice_model') || 'whisper-large-v3-turbo';
 								const auth = await getAuthHeaders();
 
@@ -158,9 +158,9 @@ export function useTabAudioCapture(onTranscriptUpdate: (text: string) => void, o
 									method: 'POST',
 									headers: {
 										'Content-Type': 'application/json',
-										'x-api-key': apiKey,
 										'x-voice-model': voiceModel,
 										Accept: 'application/json',
+										...optionalGroqApiKeyHeaders(),
 										...auth,
 									},
 									body: JSON.stringify({

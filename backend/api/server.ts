@@ -91,6 +91,57 @@ function extractJSON(content: string): any {
 dotenv.config();
 dotenv.config({ path: path.join(__dirname, '../.env'), override: true });
 
+function normalizeCorsOrigin(origin: string): string {
+  return origin.trim().replace(/\/$/, '');
+}
+
+/** Origins allowed when reflecting Access-Control-Allow-Origin with credentials. */
+function buildCorsAllowlist(): Set<string> {
+  const set = new Set<string>();
+  const raw = process.env.ALLOWED_ORIGINS?.trim();
+  if (raw) {
+    for (const part of raw.split(',')) {
+      const n = normalizeCorsOrigin(part);
+      if (n) set.add(n);
+    }
+  }
+  if (process.env.NODE_ENV !== 'production') {
+    for (const d of [
+      'http://localhost:5173',
+      'http://localhost:3000',
+      'http://127.0.0.1:5173',
+      'http://127.0.0.1:3000',
+    ]) {
+      set.add(d);
+    }
+  }
+  const vercelUrl = process.env.VERCEL_URL?.trim();
+  if (vercelUrl) {
+    set.add(`https://${vercelUrl}`);
+  }
+  if (process.env.NODE_ENV === 'production' && set.size === 0) {
+    console.warn(
+      '[CORS] No allowlisted origins. Set ALLOWED_ORIGINS to your site URL(s). Browser cross-origin API calls will fail until then.'
+    );
+  }
+  return set;
+}
+
+/** When false in production, `x-api-key` is ignored and only `GROQ_API_KEY` is used. */
+function isClientGroqKeyAllowed(): boolean {
+  const v = process.env.ALLOW_CLIENT_GROQ_KEY?.trim().toLowerCase();
+  if (v === 'true' || v === '1' || v === 'yes') return true;
+  if (v === 'false' || v === '0' || v === 'no') return false;
+  return process.env.NODE_ENV !== 'production';
+}
+
+function clientGroqKeyFromRequest(req: express.Request): string | undefined {
+  if (!isClientGroqKeyAllowed()) return undefined;
+  const raw = req.headers['x-api-key'];
+  const h = typeof raw === 'string' ? raw.trim() : Array.isArray(raw) ? raw[0]?.trim() : '';
+  return h || undefined;
+}
+
 let serverStarted = false;
 
 export async function startServer(): Promise<number | express.Express> {
@@ -110,16 +161,29 @@ export async function startServer(): Promise<number | express.Express> {
   let initialPort = process.env.PORT ? parseInt(process.env.PORT) : 3000;
   const httpServer = createServer(app);
 
-  app.use(express.json({ limit: '50mb' }));
+  const corsAllowlist = buildCorsAllowlist();
+  if (corsAllowlist.size > 0) {
+    console.log('[CORS] Allowlisted origins:', [...corsAllowlist].join(', '));
+  }
 
-  // ✅ CORS Configuration - Allow requests from all origins
+  const jsonBodyLimit = process.env.JSON_BODY_LIMIT?.trim() || '25mb';
+  app.use(express.json({ limit: jsonBodyLimit }));
+
   app.use((req, res, next) => {
-    const origin = req.headers.origin || '*';
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Access-Control-Allow-Credentials', 'true');
+    const originHeader = req.headers.origin;
+    if (originHeader) {
+      const normalized = normalizeCorsOrigin(originHeader);
+      if (corsAllowlist.has(normalized)) {
+        res.header('Access-Control-Allow-Origin', normalized);
+        res.header('Access-Control-Allow-Credentials', 'true');
+      }
+    }
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key, x-model, x-persona, x-voice-model, x-mode, x-client-fingerprint, Cache-Control, cache-control, Pragma, pragma');
-    
+    res.header(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, x-api-key, x-model, x-persona, x-voice-model, x-mode, x-client-fingerprint, Cache-Control, cache-control, Pragma, pragma'
+    );
+
     if (req.method === 'OPTIONS') {
       return res.sendStatus(200);
     }
@@ -149,9 +213,8 @@ export async function startServer(): Promise<number | express.Express> {
     try {
       const authReq = req as AuthRequest;
       
-      const customKey = (req.headers['x-api-key'] as string) || '';
       const customVoiceModel = (req.headers['x-voice-model'] as string) || 'whisper-large-v3-turbo';
-      const groq = getGroq(customKey);
+      const groq = getGroq(clientGroqKeyFromRequest(req));
 
       const { audioBase64, mimeType, audioChunkDuration } = req.body;
       if (!audioBase64) {
@@ -301,11 +364,10 @@ export async function startServer(): Promise<number | express.Express> {
     try {
       const authReq = req as AuthRequest;
       
-      const customKey = (req.headers['x-api-key'] as string) || '';
       const customModel = (req.headers['x-model'] as string) || '';
       const persona = (req.headers['x-persona'] as string) || 'Technical Interviewer';
       const mode = (req.headers['x-mode'] as string) || 'voice';
-      const groq = getGroq(customKey);
+      const groq = getGroq(clientGroqKeyFromRequest(req));
 
       const supportsLogprobs = (model: string) => {
         // Define models that are known to support logprobs or skip it completely
@@ -645,7 +707,6 @@ Rules:
       });
     }
 
-    const customKey = req.headers['x-api-key'] as string;
     const { jd, resume } = req.body;
 
     if (!jd || jd.length < 50) {
@@ -654,7 +715,7 @@ Rules:
     }
 
     try {
-      const groq = getGroq(customKey);
+      const groq = getGroq(clientGroqKeyFromRequest(req));
       console.log("[Cache] Starting pre-interview cache generation...");
 
       // Step 1: Generate Questions
