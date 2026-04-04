@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { PlanTier } from '../../shared/constants/planLimits';
 import { API_ENDPOINT } from '../../shared/utils/config';
-import { useApiAuthHeaders } from '../providers/ApiAuthContext';
+import { useApiAuth, useApiAuthHeaders } from '../providers/ApiAuthContext';
+
+const clerkUiEnabled = !!import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
 export interface UsageQuota {
 	voiceMinutes: { used: number; limit: number; remaining: number; percentUsed: number };
@@ -38,6 +40,7 @@ export function usePlanStatus(): PlanStatus {
 	const [error, setError] = useState<string | null>(null);
 	const mounted = useRef(true);
 	const getAuthHeaders = useApiAuthHeaders();
+	const { isAuthReady, isSignedIn } = useApiAuth();
 
 	const fetchPlanStatus = useCallback(async () => {
 		setLoading(true);
@@ -88,12 +91,14 @@ export function usePlanStatus(): PlanStatus {
 	}, [getAuthHeaders]);
 
 	useEffect(() => {
+		if (!isAuthReady) return;
+		if (clerkUiEnabled && !isSignedIn) return;
 		mounted.current = true;
 		void fetchPlanStatus();
 		return () => {
 			mounted.current = false;
 		};
-	}, [fetchPlanStatus]);
+	}, [fetchPlanStatus, isAuthReady, isSignedIn]);
 
 	return {
 		plan,

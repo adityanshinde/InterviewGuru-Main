@@ -62,6 +62,10 @@ export async function loadClerkUserForRequest(clerkUserId: string, signupIp: str
 	}
 
 	if (!isDBConnected()) {
+		console.warn(
+			'[clerkUserSync] Postgres not connected (check DATABASE_URL on server) — skipping ig_users INSERT for',
+			clerkUserId
+		);
 		const remote = await clerk.users.getUser(clerkUserId);
 		return {
 			userId: clerkUserId,
