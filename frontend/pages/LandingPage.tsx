@@ -1,6 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { SignedIn, SignedOut } from '@clerk/clerk-react';
 import './LandingPage.css';
+
+const clerkUiEnabled = !!import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
 // ── Interactive Demo Data ──────────────────────────────────────────────────
 const DEMO_STEPS = [
@@ -184,7 +187,29 @@ export default function LandingPage() {
 			{/* ── Sticky Top CTA Bar (appears after hero) ─────────────────── */}
 			<div className={`sticky-cta-bar ${scrolled ? 'visible' : ''}`}>
 				<span className="sticky-cta-text">🚀 Start cracking interviews for free</span>
-				<button className="sticky-cta-btn" onClick={() => navigate('/app')}>Launch App</button>
+				{!clerkUiEnabled ? (
+					<button className="sticky-cta-btn" onClick={() => navigate('/app')}>
+						Launch App
+					</button>
+				) : (
+					<>
+						<SignedIn>
+							<button className="sticky-cta-btn" onClick={() => navigate('/app')}>
+								Launch App
+							</button>
+						</SignedIn>
+						<SignedOut>
+							<div className="flex items-center gap-2 flex-wrap justify-end">
+								<Link to="/sign-in" className="sticky-cta-btn opacity-90 hover:opacity-100">
+									Sign in
+								</Link>
+								<Link to="/sign-up" className="sticky-cta-btn">
+									Sign up
+								</Link>
+							</div>
+						</SignedOut>
+					</>
+				)}
 			</div>
 
 			{/* ── Header ────────────────────────────────────────────────────── */}
@@ -203,8 +228,35 @@ export default function LandingPage() {
 					</ul>
 
 					<div className="flex items-center gap-3">
-						<button onClick={() => navigate('/app')} className="nav-btn-outline cursor-pointer">Open App</button>
-						<button onClick={() => navigate('/app')} className="nav-cta-button cursor-pointer">Launch App →</button>
+						{!clerkUiEnabled ? (
+							<>
+								<button onClick={() => navigate('/app')} className="nav-btn-outline cursor-pointer">
+									Open App
+								</button>
+								<button onClick={() => navigate('/app')} className="nav-cta-button cursor-pointer">
+									Launch App →
+								</button>
+							</>
+						) : (
+							<>
+								<SignedIn>
+									<button onClick={() => navigate('/app')} className="nav-btn-outline cursor-pointer">
+										Open App
+									</button>
+									<button onClick={() => navigate('/app')} className="nav-cta-button cursor-pointer">
+										Launch App →
+									</button>
+								</SignedIn>
+								<SignedOut>
+									<Link to="/sign-in" className="nav-btn-outline cursor-pointer inline-flex items-center justify-center no-underline">
+										Sign in
+									</Link>
+									<Link to="/sign-up" className="nav-cta-button cursor-pointer inline-flex items-center justify-center no-underline">
+										Sign up
+									</Link>
+								</SignedOut>
+							</>
+						)}
 
 						{/* Mobile hamburger */}
 						<button
@@ -225,6 +277,19 @@ export default function LandingPage() {
 					<a href="#tech" onClick={() => setMobileMenuOpen(false)}>Tech Stack</a>
 					<a href="#pricing" onClick={() => setMobileMenuOpen(false)}>Pricing</a>
 					<a href="https://github.com/adityanshinde/Parakeet-AI-Clone" target="_blank" rel="noreferrer">GitHub</a>
+					{clerkUiEnabled && (
+						<>
+							<SignedOut>
+								<Link to="/sign-in" onClick={() => setMobileMenuOpen(false)}>Sign in</Link>
+								<Link to="/sign-up" onClick={() => setMobileMenuOpen(false)}>Sign up</Link>
+							</SignedOut>
+							<SignedIn>
+								<button type="button" className="text-left bg-transparent border-0 p-0 font-inherit cursor-pointer" onClick={() => { setMobileMenuOpen(false); navigate('/app'); }}>
+									Open app
+								</button>
+							</SignedIn>
+						</>
+					)}
 				</div>
 			</header>
 
@@ -267,12 +332,38 @@ export default function LandingPage() {
 						</div>
 
 						<div className="hero-buttons">
-							<button className="btn btn-primary btn-glow cursor-pointer" onClick={() => navigate('/app')}>
-								🚀 Launch App
-							</button>
-							<a href="#demo" className="btn btn-secondary">
-								▶ Watch Live Demo
-							</a>
+							{!clerkUiEnabled ? (
+								<>
+									<button className="btn btn-primary btn-glow cursor-pointer" onClick={() => navigate('/app')}>
+										🚀 Launch App
+									</button>
+									<a href="#demo" className="btn btn-secondary">
+										▶ Watch Live Demo
+									</a>
+								</>
+							) : (
+								<>
+									<SignedIn>
+										<button className="btn btn-primary btn-glow cursor-pointer" onClick={() => navigate('/app')}>
+											🚀 Launch App
+										</button>
+										<a href="#demo" className="btn btn-secondary">
+											▶ Watch Live Demo
+										</a>
+									</SignedIn>
+									<SignedOut>
+										<Link to="/sign-up" className="btn btn-primary btn-glow cursor-pointer no-underline inline-flex items-center justify-center">
+											Sign up
+										</Link>
+										<Link to="/sign-in" className="btn btn-secondary no-underline inline-flex items-center justify-center">
+											Sign in
+										</Link>
+										<a href="#demo" className="btn btn-secondary">
+											▶ Watch Live Demo
+										</a>
+									</SignedOut>
+								</>
+							)}
 						</div>
 
 						<p className="hero-guarantee">
@@ -482,7 +573,24 @@ export default function LandingPage() {
 									<li key={f}>{f}</li>
 								))}
 							</ul>
-							<button className="btn btn-secondary" style={{ width: '100%' }} onClick={() => navigate('/app')}>Get Started Free</button>
+							{!clerkUiEnabled ? (
+								<button className="btn btn-secondary" style={{ width: '100%' }} onClick={() => navigate('/app')}>
+									Get Started Free
+								</button>
+							) : (
+								<>
+									<SignedIn>
+										<button className="btn btn-secondary" style={{ width: '100%' }} onClick={() => navigate('/app')}>
+											Get Started Free
+										</button>
+									</SignedIn>
+									<SignedOut>
+										<Link to="/sign-up" className="btn btn-secondary no-underline inline-flex items-center justify-center" style={{ width: '100%' }}>
+											Get Started Free
+										</Link>
+									</SignedOut>
+								</>
+							)}
 						</div>
 
 						{/* Professional — Featured */}
@@ -534,7 +642,28 @@ export default function LandingPage() {
 							<div className="download-card-icon">🌐</div>
 							<h3>Web Version</h3>
 							<p>Use directly in your browser. No install required. Perfect for web-based interviews on Google Meet.</p>
-							<button className="btn btn-primary btn-glow" style={{ width: '100%' }} onClick={() => navigate('/app')}>🚀 Launch Web App Free</button>
+							{!clerkUiEnabled ? (
+								<button className="btn btn-primary btn-glow" style={{ width: '100%' }} onClick={() => navigate('/app')}>
+									🚀 Launch Web App Free
+								</button>
+							) : (
+								<>
+									<SignedIn>
+										<button className="btn btn-primary btn-glow" style={{ width: '100%' }} onClick={() => navigate('/app')}>
+											🚀 Launch Web App Free
+										</button>
+									</SignedIn>
+									<SignedOut>
+										<Link
+											to="/sign-up"
+											className="btn btn-primary btn-glow no-underline inline-flex items-center justify-center"
+											style={{ width: '100%' }}
+										>
+											🚀 Sign up free
+										</Link>
+									</SignedOut>
+								</>
+							)}
 						</div>
 						<div className="download-card reveal">
 							<div className="download-card-icon">💻</div>
@@ -611,9 +740,29 @@ export default function LandingPage() {
 
 			{/* Mobile sticky bottom CTA */}
 			<div className="mobile-sticky-cta">
+				{!clerkUiEnabled ? (
 					<button className="btn btn-primary btn-glow w-full" onClick={() => navigate('/app')}>
 						🚀 Launch App
 					</button>
+				) : (
+					<>
+						<SignedIn>
+							<button className="btn btn-primary btn-glow w-full" onClick={() => navigate('/app')}>
+								🚀 Launch App
+							</button>
+						</SignedIn>
+						<SignedOut>
+							<div className="flex gap-2 w-full">
+								<Link to="/sign-in" className="btn btn-secondary no-underline flex-1 text-center inline-flex items-center justify-center">
+									Sign in
+								</Link>
+								<Link to="/sign-up" className="btn btn-primary btn-glow no-underline flex-1 text-center inline-flex items-center justify-center">
+									Sign up
+								</Link>
+							</div>
+						</SignedOut>
+					</>
+				)}
 			</div>
 		</div>
 	);
