@@ -8,7 +8,6 @@ import { fileURLToPath } from 'url';
 import os from 'os';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-import { pipeline, env } from '@xenova/transformers';
 import { authMiddleware, clerkAuthMiddleware, quotaMiddleware } from '../middleware/authMiddleware';
 import { apiBurstLimiter } from '../middleware/rateLimiter';
 import {
@@ -34,9 +33,6 @@ import {
   buildVoiceSystemPrompt,
 } from '../../shared/prompts';
 
-// Suppress local transformer model warnings and force download
-env.allowLocalModels = false;
-
 // ════════════════════════════════════════════════════════════════
 // VECTOR CACHE (Pre-Interview Generation to drastically reduce latency)
 // ════════════════════════════════════════════════════════════════
@@ -52,8 +48,11 @@ try {
 }
 
 let extractor: any = null;
+/** Lazy-load @xenova/transformers so Vercel/serverless cold starts (e.g. /api/health) do not pull ML/WASM at import time. */
 async function getEmbedding(text: string): Promise<number[]> {
   if (!extractor) {
+    const { pipeline, env } = await import('@xenova/transformers');
+    env.allowLocalModels = false;
     extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
   }
   const output = await extractor(text, { pooling: 'mean', normalize: true });
