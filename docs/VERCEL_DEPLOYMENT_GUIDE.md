@@ -67,6 +67,7 @@ Set these in the Vercel project dashboard:
 | `GROQ_API_KEY` | Yes | `gsk_...` | Used for transcription and analysis |
 | `GEMINI_API_KEY` | Yes | `AIza...` | Used for TTS |
 | `CLERK_SECRET_KEY` | Yes (prod) | `sk_live_...` / `sk_test_...` | Server verifies JWTs; ties usage to real users |
+| `CLERK_PUBLISHABLE_KEY` | Yes (prod API) | Same `pk_...` as the browser | `@clerk/express` needs this at **runtime** on the serverless API (or set `VITE_CLERK_PUBLISHABLE_KEY` for all contexts — the app reads either) |
 | `DATABASE_URL` | Yes (prod) | Neon pooler URL (recommended) or Supabase pooler `:6543` | Single Postgres for quotas and sessions |
 | `VITE_CLERK_PUBLISHABLE_KEY` | Yes (prod UI build) | `pk_live_...` | Set at **build** time for the frontend project |
 | `ABUSE_MAX_SIGNUPS_PER_IP_PER_DAY` | Optional | e.g. `3` | Limits new `ig_users` rows per IP / 24h |
@@ -79,6 +80,7 @@ Use this as the Vercel import template. Replace the placeholder values with your
 GROQ_API_KEY=gsk_your_groq_key
 GEMINI_API_KEY=AIza_your_gemini_key
 CLERK_SECRET_KEY=sk_test_or_live_...
+CLERK_PUBLISHABLE_KEY=pk_test_or_live_...
 DATABASE_URL=postgresql://...@ep-xxx.neon.tech/neondb?sslmode=require
 VITE_CLERK_PUBLISHABLE_KEY=pk_test_or_live_...
 ABUSE_MAX_SIGNUPS_PER_IP_PER_DAY=3

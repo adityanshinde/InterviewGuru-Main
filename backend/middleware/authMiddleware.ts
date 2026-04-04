@@ -37,12 +37,20 @@ function clientIp(req: Request): string {
 	);
 }
 
-const clerkEnabled = () => !!process.env.CLERK_SECRET_KEY;
+const clerkSecret = () => process.env.CLERK_SECRET_KEY?.trim();
+/** Same `pk_...` as the browser; Clerk Express requires it at runtime (not only `VITE_*` on Vercel). */
+const clerkPublishable = () =>
+	(process.env.CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY)?.trim();
+
+const clerkEnabled = () => !!clerkSecret();
 
 /**
  * Clerk session middleware — no-op if `CLERK_SECRET_KEY` is unset (local guest mode).
+ * Passes publishable key explicitly so `CLERK_PUBLISHABLE_KEY` or `VITE_CLERK_PUBLISHABLE_KEY` both work on the server.
  */
-export const clerkAuthMiddleware: RequestHandler = clerkEnabled() ? clerkMiddleware() : (_req, _res, next) => next();
+export const clerkAuthMiddleware: RequestHandler = clerkEnabled()
+	? clerkMiddleware({ publishableKey: clerkPublishable() || undefined })
+	: (_req, _res, next) => next();
 
 /**
  * Resolves `req.user` from Clerk + DB, or guest identity when Clerk is disabled.
