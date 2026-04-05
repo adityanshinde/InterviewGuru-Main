@@ -137,6 +137,11 @@ function byokModeEnabled(): boolean {
   return truthyEnv(process.env.BYOK_MODE);
 }
 
+/** Fewer / cheaper Groq calls and smaller chat model — lower latency, some quality tradeoff. */
+function analyzeFastMode(): boolean {
+  return truthyEnv(process.env.ANALYZE_FAST_MODE);
+}
+
 /** When false in production, `x-api-key` is ignored unless BYOK_MODE or ALLOW_CLIENT_GROQ_KEY is on. */
 function isClientGroqKeyAllowed(): boolean {
   if (byokModeEnabled()) return true;
@@ -473,17 +478,19 @@ export async function startServer(): Promise<number | express.Express> {
       // CHAT MODE — Adaptive Prompting + Self-Verification Pipeline
       // ════════════════════════════════════════════════════════════════
       if (mode === 'chat') {
+        const fastAnalyze = analyzeFastMode();
 
         // ── STEP 1: Difficulty Classifier (cheap + fast) ──────────────
         let questionType = 'concept';
         let difficulty = 'medium';
 
-        try {
-          const classifyCompletion = await groq.chat.completions.create({
-            messages: [
-              {
-                role: "system",
-                content: `You are a classifier. Return ONLY valid JSON, nothing else.
+        if (!fastAnalyze) {
+          try {
+            const classifyCompletion = await groq.chat.completions.create({
+              messages: [
+                {
+                  role: "system",
+                  content: `You are a classifier. Return ONLY valid JSON, nothing else.
 Schema: {"type": "concept | coding | system_design | behavioral", "difficulty": "easy | medium | hard"}
 Rules:
 - concept: definitions, explanations, comparisons of technologies
@@ -493,18 +500,19 @@ Rules:
 - easy: basic definitions, junior-level
 - medium: trade-offs, algorithms, intermediate
 - hard: system design, architecture, advanced algorithms`
-              },
-              { role: "user", content: `Classify: ${transcript}` }
-            ],
-            model: "llama-3.1-8b-instant",
-            response_format: { type: "json_object" },
-            temperature: 0.1,
-          });
-          let classifyData: any = {};
-          try { classifyData = JSON.parse(classifyCompletion.choices[0]?.message?.content || "{}"); } catch { }
-          questionType = classifyData.type || 'concept';
-          difficulty = classifyData.difficulty || 'medium';
-        } catch { /* use defaults */ }
+                },
+                { role: "user", content: `Classify: ${transcript}` }
+              ],
+              model: "llama-3.1-8b-instant",
+              response_format: { type: "json_object" },
+              temperature: 0.1,
+            });
+            let classifyData: any = {};
+            try { classifyData = JSON.parse(classifyCompletion.choices[0]?.message?.content || "{}"); } catch { }
+            questionType = classifyData.type || 'concept';
+            difficulty = classifyData.difficulty || 'medium';
+          } catch { /* use defaults */ }
+        }
 
         // ── STEP 2: Build Adaptive Prompt ─────────────────────────────
         const chatSystemPrompt = buildChatSystemPrompt({
@@ -516,7 +524,7 @@ Rules:
         });
 
         // ── STEP 3: Generate Answer ────────────────────────────────────
-        const chatModel = "llama-3.3-70b-versatile";
+        const chatModel = fastAnalyze ? "llama-3.1-8b-instant" : "llama-3.3-70b-versatile";
         const chatParams: any = {
           messages: [
             { role: "system", content: chatSystemPrompt },
@@ -542,7 +550,7 @@ Rules:
           const avgLogProb = tokens.reduce((s: number, t: any) => s + (t.logprob || 0), 0) / tokens.length;
           confidence = Math.exp(avgLogProb);
           console.log(`[Chat] Answer generated with logprob confidence: ${confidence.toFixed(2)}`);
-        } else {
+        } else if (!fastAnalyze) {
           try {
             const confCompletion = await groq.chat.completions.create({
               model: "llama-3.1-8b-instant",
@@ -563,7 +571,11 @@ Rules:
 
         // ── STEP 4: Self-Verification for hard/system_design questions ─
         // Use logprobs trick: ONLY run verification if confidence is low (< 0.8)
-        if ((difficulty === 'hard' || questionType === 'system_design') && confidence < 0.8) {
+        if (
+          !fastAnalyze &&
+          (difficulty === 'hard' || questionType === 'system_design') &&
+          confidence < 0.8
+        ) {
           try {
             const verifyCompletion = await groq.chat.completions.create({
               messages: [
@@ -615,11 +627,11 @@ Rules:
           bullets: [],
           spoken: chatData.spoken || "",
         });
-
-        // ════════════════════════════════════════════════════════════════
-        // VOICE MODE — Low Latency, High Signal Density
-        // ════════════════════════════════════════════════════════════════
       } else {
+      // ════════════════════════════════════════════════════════════════
+      // VOICE MODE — Low Latency, High Signal Density
+      // ════════════════════════════════════════════════════════════════
+        const fastAnalyze = analyzeFastMode();
         const voiceSystemPrompt = buildVoiceSystemPrompt({ resume, jd, persona });
 
         const selectedVoiceModel = customModel || "llama-3.1-8b-instant";
@@ -646,7 +658,7 @@ Rules:
           const avgLogProb = voiceTokens.reduce((s: number, t: any) => s + (t.logprob || 0), 0) / voiceTokens.length;
           logprobConfidence = Math.exp(avgLogProb);
           console.log(`[Voice] Question detection API completed with avg logprob confidence: ${logprobConfidence.toFixed(2)}`);
-        } else {
+        } else if (!fastAnalyze) {
           try {
             const confCompletion = await groq.chat.completions.create({
               model: "llama-3.1-8b-instant",
