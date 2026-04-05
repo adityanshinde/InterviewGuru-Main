@@ -6,6 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
+import { timingSafeEqual } from 'node:crypto';
 
 // tsup CJS bundle clears import.meta.url; tsx ESM has a real file: URL. Fallback keeps dotenv/build paths correct on Vercel.
 const metaUrl = import.meta.url;
@@ -133,6 +134,28 @@ function truthyEnv(v: string | undefined): boolean {
   return t === 'true' || t === '1' || t === 'yes';
 }
 
+/** Compare cron secrets in constant time (after trim). Length mismatch → false. */
+function secureCronSecretEquals(expected: string, provided: string): boolean {
+  const a = Buffer.from(expected.trim(), 'utf8');
+  const b = Buffer.from(provided.trim(), 'utf8');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+function cronBearerToken(req: express.Request): string | undefined {
+  const raw = req.headers.authorization;
+  if (!raw || typeof raw !== 'string') return undefined;
+  const m = raw.match(/^\s*Bearer\s+(.+?)\s*$/is);
+  return m?.[1]?.trim();
+}
+
+function cronSecretHeader(req: express.Request): string | undefined {
+  const raw = req.headers['x-cron-secret'];
+  if (typeof raw === 'string') return raw.trim();
+  if (Array.isArray(raw) && raw[0]) return String(raw[0]).trim();
+  return undefined;
+}
+
 /** Public BYOK launch: users send their Groq key via `x-api-key`; server `GROQ_API_KEY` is optional fallback. */
 function byokModeEnabled(): boolean {
   return truthyEnv(process.env.BYOK_MODE);
@@ -247,7 +270,12 @@ export async function startServer(): Promise<number | express.Express> {
     const secret = process.env.CRON_SECRET?.trim();
     const onVercel = truthyEnv(process.env.VERCEL);
     if (secret) {
-      if (req.headers.authorization !== `Bearer ${secret}`) {
+      const bearer = cronBearerToken(req);
+      const headerSecret = cronSecretHeader(req);
+      const ok =
+        (bearer !== undefined && secureCronSecretEquals(secret, bearer)) ||
+        (headerSecret !== undefined && secureCronSecretEquals(secret, headerSecret));
+      if (!ok) {
         res.status(401).json({ error: 'Unauthorized' });
         return;
       }

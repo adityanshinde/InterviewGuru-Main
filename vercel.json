@@ -1,11 +1,5 @@
 {
   "version": 2,
-  "crons": [
-    {
-      "path": "/api/cron/keep-warm",
-      "schedule": "*/5 * * * *"
-    }
-  ],
   "buildCommand": "npm run build",
   "outputDirectory": "build",
   "functions": {

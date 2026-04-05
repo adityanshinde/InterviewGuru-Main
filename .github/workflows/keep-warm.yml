@@ -1,9 +1,8 @@
-# Optional: your own scheduler (like UptimeRobot) via GitHub — free on public repos.
-# Repo → Settings → Secrets → add:
+# Hobby plan: Vercel Cron is not available — use this workflow (or UptimeRobot, etc.).
+# Pro plan: you can add crons in vercel.json instead; disable this workflow to avoid double pings.
+# Repo → Settings → Secrets → Actions → add:
 #   KEEP_WARM_URL = https://your-domain.com/api/cron/keep-warm
-#   CRON_SECRET   = same random string as Vercel CRON_SECRET
-#
-# Disable this workflow if you only use Vercel Cron (vercel.json) to avoid double pings.
+#   CRON_SECRET   = random string; set the same value as CRON_SECRET on Vercel
 
 name: Keep warm
 
@@ -26,6 +25,10 @@ jobs:
             echo "Skip: set KEEP_WARM_URL and CRON_SECRET in repo Actions secrets."
             exit 0
           fi
+          # Strip accidental newlines/CR from secret paste (GitHub UI); must match Vercel CRON_SECRET exactly.
+          URL="$(printf '%s' "$KEEP_WARM_URL" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+          SECRET="$(printf '%s' "$CRON_SECRET" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | tr -d '\r\n')"
           curl -fsS --max-time 60 \
-            -H "Authorization: Bearer ${CRON_SECRET}" \
-            "${KEEP_WARM_URL}"
+            -H "Authorization: Bearer ${SECRET}" \
+            -H "x-cron-secret: ${SECRET}" \
+            "${URL}"
