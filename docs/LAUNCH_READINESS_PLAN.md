@@ -81,6 +81,7 @@ Reference: `docs/SECURITY_HARDENING_PLAN.md`.
 - [ ] Settings UI already has Groq key field — verify save + that production build sends `x-api-key` only when `VITE_BYOK=true`.
 - [ ] Optional: server `GROQ_API_KEY` for a future “hosted tier”; document if unused in beta.
 - [ ] Privacy Policy: mention user-supplied third-party API keys in the browser and your role as **proxy** to Groq.
+- [ ] **Latency:** With `BYOK_MODE=true`, `/api/analyze` uses the **fast pipeline** by default (8B chat, fewer Groq round-trips). Clerk user lookups are **cached** (`CLERK_USER_CACHE_MS`, default 120s) so `/api/usage` is not blocked on a Clerk HTTP call every time. Set `ANALYZE_FULL_PIPELINE=true` only if you want the slower, richer multi-step flow.
 
 ### If **paid beta** (mode B)
 

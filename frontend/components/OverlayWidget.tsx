@@ -531,7 +531,7 @@ export default function OverlayWidget() {
         if (planStatus.refetch) {
           planStatus.refetch().catch(err => console.error('Failed to refetch quotas:', err));
         }
-      }, 500);
+      }, 2500);
       return () => clearTimeout(timer);
     }
   }, [answer, transcript, planStatus.refetch]);

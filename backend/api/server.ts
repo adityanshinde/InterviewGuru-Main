@@ -23,6 +23,7 @@ import {
   getUserFromDB,
   resetMonthlyUsageIfNeeded,
   checkTrialExpired,
+  calculateTrialDaysRemaining,
 } from '../storage/usageStorage';
 import { PLAN_LIMITS } from '../../shared/constants/planLimits';
 import { AuthRequest } from '../../shared/types';
@@ -137,9 +138,15 @@ function byokModeEnabled(): boolean {
   return truthyEnv(process.env.BYOK_MODE);
 }
 
-/** Fewer / cheaper Groq calls and smaller chat model — lower latency, some quality tradeoff. */
+/**
+ * Fewer / cheaper Groq calls and smaller chat model — lower latency, some quality tradeoff.
+ * ON by default when BYOK_MODE is set (live-interview UX). Opt out with ANALYZE_FULL_PIPELINE=true.
+ * Or force on anytime with ANALYZE_FAST_MODE=true.
+ */
 function analyzeFastMode(): boolean {
-  return truthyEnv(process.env.ANALYZE_FAST_MODE);
+  if (truthyEnv(process.env.ANALYZE_FULL_PIPELINE)) return false;
+  if (truthyEnv(process.env.ANALYZE_FAST_MODE)) return true;
+  return byokModeEnabled();
 }
 
 /** When false in production, `x-api-key` is ignored unless BYOK_MODE or ALLOW_CLIENT_GROQ_KEY is on. */
@@ -843,7 +850,6 @@ Rules:
         return res.status(401).json({ error: 'User not authenticated' });
       }
 
-      const { resetMonthlyUsageIfNeeded, calculateTrialDaysRemaining, checkTrialExpired } = await import('../storage/usageStorage');
       const user = await getUserFromDB(authReq.user.userId);
 
       if (!user) {

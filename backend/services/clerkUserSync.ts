@@ -3,6 +3,18 @@ import { getPool, isDBConnected } from './database';
 
 let clerkClient: ReturnType<typeof createClerkClient> | null = null;
 
+/** Avoid calling Clerk `getUser` on every API request (was doubling latency with parallel /api/usage + /api/analyze). */
+type ClerkEmailCacheEntry = { expiresAt: number; email: string };
+
+const clerkEmailCache = new Map<string, ClerkEmailCacheEntry>();
+
+function clerkUserCacheTtlMs(): number {
+	const raw = process.env.CLERK_USER_CACHE_MS?.trim();
+	if (raw === '0') return 0;
+	const n = parseInt(raw || '120000', 10);
+	return Number.isFinite(n) && n >= 0 ? n : 120000;
+}
+
 function getClerk(): ReturnType<typeof createClerkClient> | null {
 	const secret = process.env.CLERK_SECRET_KEY;
 	if (!secret) return null;
@@ -84,8 +96,25 @@ export async function loadClerkUserForRequest(clerkUserId: string, signupIp: str
 
 	if (existing.rows.length > 0) {
 		const row = existing.rows[0];
+		const ttl = clerkUserCacheTtlMs();
+		const now = Date.now();
+
+		if (ttl > 0) {
+			const hit = clerkEmailCache.get(clerkUserId);
+			if (hit && hit.expiresAt > now) {
+				return {
+					userId: row.clerk_user_id,
+					email: hit.email || row.email,
+					plan: row.plan as SyncedUser['plan'],
+				};
+			}
+		}
+
 		const remote = await clerk.users.getUser(clerkUserId);
-		const email = primaryEmail(remote);
+		const email = primaryEmail(remote) || row.email;
+		if (ttl > 0) {
+			clerkEmailCache.set(clerkUserId, { expiresAt: now + ttl, email });
+		}
 		if (email && email !== row.email) {
 			await pool.query(`UPDATE ig_users SET email = $2, updated_at = NOW() WHERE clerk_user_id = $1`, [
 				clerkUserId,
