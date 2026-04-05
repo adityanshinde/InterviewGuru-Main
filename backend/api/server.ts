@@ -27,7 +27,7 @@ import {
 } from '../storage/usageStorage';
 import { PLAN_LIMITS } from '../../shared/constants/planLimits';
 import { AuthRequest } from '../../shared/types';
-import { waitForDatabase } from '../services/database';
+import { waitForDatabase, getPool, isDBConnected } from '../services/database';
 import {
   buildAnswerConfidencePrompt,
   buildAnswerVerificationPrompt,
@@ -216,8 +216,58 @@ export async function startServer(): Promise<number | express.Express> {
     next();
   });
 
-  app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok' });
+  app.get('/api/health', async (req, res) => {
+    const deep =
+      req.query.deep === '1' ||
+      req.query.deep === 'true' ||
+      truthyEnv(process.env.HEALTH_CHECK_DB);
+    if (!deep) {
+      res.json({ status: 'ok' });
+      return;
+    }
+    if (!isDBConnected()) {
+      res.status(503).json({ status: 'degraded', db: 'not_connected' });
+      return;
+    }
+    try {
+      await getPool()!.query('SELECT 1');
+      res.json({ status: 'ok', db: 'up' });
+    } catch (e: any) {
+      console.error('[health] DB ping failed:', e?.message || e);
+      res.status(503).json({ status: 'error', db: 'down' });
+    }
+  });
+
+  /**
+   * Your own “UptimeRobot”: hit on a schedule (Vercel Cron, GitHub Actions, etc.).
+   * Secured with Authorization: Bearer <CRON_SECRET> (Vercel injects this when CRON_SECRET is set).
+   * Runs SELECT 1 to wake Neon + exercise the API.
+   */
+  app.get('/api/cron/keep-warm', async (req, res) => {
+    const secret = process.env.CRON_SECRET?.trim();
+    const onVercel = truthyEnv(process.env.VERCEL);
+    if (secret) {
+      if (req.headers.authorization !== `Bearer ${secret}`) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+    } else if (onVercel || process.env.NODE_ENV === 'production') {
+      res.status(503).json({ error: 'Set CRON_SECRET in env for /api/cron/keep-warm' });
+      return;
+    }
+
+    if (!isDBConnected()) {
+      res.status(503).json({ ok: false, db: 'not_connected' });
+      return;
+    }
+    try {
+      await getPool()!.query('SELECT 1');
+      res.json({ ok: true, at: new Date().toISOString(), db: 'up' });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[cron/keep-warm]', msg);
+      res.status(503).json({ ok: false, db: 'down' });
+    }
   });
 
   app.use('/api', clerkAuthMiddleware);

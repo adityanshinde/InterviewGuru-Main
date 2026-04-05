@@ -1,0 +1,31 @@
+# Optional: your own scheduler (like UptimeRobot) via GitHub — free on public repos.
+# Repo → Settings → Secrets → add:
+#   KEEP_WARM_URL = https://your-domain.com/api/cron/keep-warm
+#   CRON_SECRET   = same random string as Vercel CRON_SECRET
+#
+# Disable this workflow if you only use Vercel Cron (vercel.json) to avoid double pings.
+
+name: Keep warm
+
+on:
+  schedule:
+    # Every 10 minutes UTC (GitHub may delay a few minutes). Use Vercel Cron for 5‑min pings.
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping API + DB
+        env:
+          KEEP_WARM_URL: ${{ secrets.KEEP_WARM_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$KEEP_WARM_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "Skip: set KEEP_WARM_URL and CRON_SECRET in repo Actions secrets."
+            exit 0
+          fi
+          curl -fsS --max-time 60 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${KEEP_WARM_URL}"
