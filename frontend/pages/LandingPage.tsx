@@ -716,7 +716,7 @@ export default function LandingPage() {
 							<h3>Windows Desktop</h3>
 							<p>Standalone .exe for maximum power. Captures system audio from Zoom, Teams, Slack — any app.</p>
 							<a
-								href="https://github.com/adityanshinde/Interview-Guru/releases/download/v1.0.0/InterviewGuru.exe"
+								href="https://github.com/adityanshinde/InterviewGuru-Main/releases/download/v1.0.1/InterviewGuru.Setup.1.0.1.exe"
 								className="btn btn-secondary"
 								style={{ display: 'block', textAlign: 'center' }}
 							>
