@@ -127,8 +127,19 @@ function buildCorsAllowlist(): Set<string> {
   return set;
 }
 
-/** When false in production, `x-api-key` is ignored and only `GROQ_API_KEY` is used. */
+function truthyEnv(v: string | undefined): boolean {
+  const t = v?.trim().toLowerCase();
+  return t === 'true' || t === '1' || t === 'yes';
+}
+
+/** Public BYOK launch: users send their Groq key via `x-api-key`; server `GROQ_API_KEY` is optional fallback. */
+function byokModeEnabled(): boolean {
+  return truthyEnv(process.env.BYOK_MODE);
+}
+
+/** When false in production, `x-api-key` is ignored unless BYOK_MODE or ALLOW_CLIENT_GROQ_KEY is on. */
 function isClientGroqKeyAllowed(): boolean {
+  if (byokModeEnabled()) return true;
   const v = process.env.ALLOW_CLIENT_GROQ_KEY?.trim().toLowerCase();
   if (v === 'true' || v === '1' || v === 'yes') return true;
   if (v === 'false' || v === '0' || v === 'no') return false;
@@ -156,6 +167,9 @@ export async function startServer(): Promise<number | express.Express> {
   console.log('[Server] Initializing database pool...');
   await waitForDatabase();
   console.log('[Server] Database pool init finished');
+  if (byokModeEnabled()) {
+    console.log('[Groq] BYOK_MODE: accepting user x-api-key in production (server GROQ_API_KEY optional fallback).');
+  }
 
   const app = express();
   let initialPort = process.env.PORT ? parseInt(process.env.PORT) : 3000;
@@ -201,7 +215,9 @@ export async function startServer(): Promise<number | express.Express> {
   function getGroq(customKey?: string) {
     const key = customKey || process.env.GROQ_API_KEY;
     if (!key) {
-      const err = new Error("API key is required. Please provide it in settings or set GROQ_API_KEY environment variable in your .env file.");
+      const err = new Error(
+        'Groq API key required. Add your key in the app settings (BYOK), or set GROQ_API_KEY on the server.'
+      );
       (err as any).status = 401;
       throw err;
     }

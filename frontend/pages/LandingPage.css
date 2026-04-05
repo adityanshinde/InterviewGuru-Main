@@ -411,7 +411,33 @@
   color: var(--text-secondary);
   max-width: 520px;
   line-height: 1.7;
-  margin-bottom: 2rem;
+  margin-bottom: 1.25rem;
+}
+
+.hero-byok {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  max-width: 520px;
+  line-height: 1.65;
+  margin: 0 0 1.75rem;
+}
+
+.hero-byok strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.hero-byok a {
+  color: var(--primary);
+  text-decoration: none;
+  font-weight: 600;
+  border-bottom: 1px solid rgba(0, 255, 179, 0.35);
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.hero-byok a:hover {
+  color: var(--secondary);
+  border-bottom-color: var(--secondary);
 }
 
 /* ── Trust Strip ───────────────────────────────────────── */

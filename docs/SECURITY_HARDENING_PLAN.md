@@ -23,10 +23,16 @@ This document tracks how we reduce attack surface for InterviewGuru’s Express 
 
 ## Phase 2 — Groq and API surface (implemented)
 
-- **Server:** In `NODE_ENV=production`, the `x-api-key` header is **ignored**; only `GROQ_API_KEY` is used. Set `ALLOW_CLIENT_GROQ_KEY=true` to allow BYO key (not recommended for public production).
-- **Client:** Production builds do not send `x-api-key` from the browser; dev builds still send the key from localStorage when set.
-- **JSON body limit:** Default reduced to **`25mb`** (was `50mb`). Override with `JSON_BODY_LIMIT` if large audio payloads require it.
-- **Operations:** Set `ABUSE_MAX_SIGNUPS_PER_IP_PER_DAY` and `API_RATE_LIMIT_PER_MINUTE` in production as needed (see `backend/.env.example`).
+**Default (hosted Groq):** In `NODE_ENV=production`, the `x-api-key` header is **ignored** unless you opt in; only `GROQ_API_KEY` is used.
+
+**BYOK launch (bring your own Groq key):**
+
+- **Server:** Set **`BYOK_MODE=true`** (or `ALLOW_CLIENT_GROQ_KEY=true`). User `x-api-key` is then honored in production. **`GROQ_API_KEY`** is optional (fallback when the client does not send a key).
+- **Client:** Set **`VITE_BYOK=true`** at **Vite build time** (e.g. Vercel env for Production). Production bundles then send `x-api-key` from `localStorage` (`groq_api_key`) when the user saved a key in settings.
+- **Risk:** User keys live in the browser (localStorage) and pass through your origin; XSS or malicious extensions could exfiltrate them. Mitigate with CSP, dependency hygiene, and clear user messaging. Your server still proxies requests to Groq (users trust you not to log keys — avoid logging headers).
+
+- **JSON body limit:** Default **`25mb`**. Override with `JSON_BODY_LIMIT` if needed.
+- **Operations:** Set `ABUSE_MAX_SIGNUPS_PER_IP_PER_DAY` and `API_RATE_LIMIT_PER_MINUTE` as needed (see `backend/.env.example`).
 
 ## Phase 3 — Headers and transport
 

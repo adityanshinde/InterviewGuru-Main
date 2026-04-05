@@ -338,6 +338,15 @@ export default function LandingPage() {
 							structured answers — all invisible during screen share.
 						</p>
 
+						<p className="hero-byok">
+							<strong>Bring your own Groq key.</strong> Add your free{' '}
+							<a href="https://console.groq.com" target="_blank" rel="noreferrer">
+								Groq API key
+							</a>{' '}
+							in the app settings after sign-in. Usage is billed by Groq to you — we never store your key on our
+							database.
+						</p>
+
 						{/* Trust signals */}
 						<div className="trust-strip">
 							<div className="trust-item">
@@ -396,7 +405,7 @@ export default function LandingPage() {
 						</div>
 
 						<p className="hero-guarantee">
-							✔ No credit card required &nbsp;&nbsp; ✔ Free Groq API included &nbsp;&nbsp; ✔ Cancel anytime
+							✔ No credit card for our app &nbsp;&nbsp; ✔ Your Groq key, your quota &nbsp;&nbsp; ✔ Cancel anytime
 						</p>
 					</div>
 
@@ -598,7 +607,7 @@ export default function LandingPage() {
 							<div className="price">$0<span>/month</span></div>
 							<p className="price-label">Perfect for getting started</p>
 							<ul className="pricing-features">
-								{['Voice & Chat modes', 'Free Groq API access', 'Desktop app (Windows)', 'Basic stealth mode', 'Community support'].map(f => (
+								{['Voice & Chat modes', 'Bring your own Groq key', 'Desktop app (Windows)', 'Basic stealth mode', 'Community support'].map(f => (
 									<li key={f}>{f}</li>
 								))}
 							</ul>
@@ -636,7 +645,7 @@ export default function LandingPage() {
 							<div className="price">$9.99<span>/month</span></div>
 							<p className="price-label">For serious interview prep</p>
 							<ul className="pricing-features">
-								{['Everything in Community', 'Priority Groq API quota', 'Advanced personas', 'Session history export', 'Resume/JD optimization', 'Priority support'].map(f => (
+								{['Everything in Community', 'Higher in-app usage limits', 'Advanced personas', 'Session history export', 'Resume/JD optimization', 'Priority support'].map(f => (
 									<li key={f}>{f}</li>
 								))}
 							</ul>
@@ -719,7 +728,7 @@ export default function LandingPage() {
 					{/* Final micro trust */}
 					<div className="final-trust reveal">
 						<span>✔ No credit card required</span>
-						<span>✔ Free Groq API access</span>
+						<span>✔ Your Groq key, your usage</span>
 						<span>✔ Cancel anytime</span>
 						<span>✔ Open source core</span>
 					</div>
