@@ -18,7 +18,8 @@
     "db:migrate:create": "node scripts/run-db-migrate.mjs create -j js",
     "electron:dev": "node desktop/main/dev-launcher.cjs",
     "predist": "taskkill /F /IM InterviewGuru.exe 2>nul || exit 0",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder",
+    "dist:publish": "npm run build && electron-builder --publish always"
   },
   "build": {
     "appId": "com.interviewguru.app",

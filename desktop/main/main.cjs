@@ -2,6 +2,40 @@ const { app, BrowserWindow, globalShortcut, desktopCapturer, ipcMain } = require
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 
+/**
+ * NSIS-installed app: auto-update from GitHub Releases (needs latest.yml + Setup on each release).
+ * Portable .exe: no in-place updates — users re-download from GitHub / your site.
+ */
+function setupAutoUpdater() {
+  if (process.env.PORTABLE_EXECUTABLE_DIR) {
+    console.log('[Updater] Portable build — download a new .exe from GitHub for updates. Use the Setup installer for auto-updates.');
+    return;
+  }
+  if (process.platform !== 'win32') {
+    return;
+  }
+
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('update-available', (info) => {
+    console.log('[Updater] New version available:', info.version);
+  });
+  autoUpdater.on('update-downloaded', (info) => {
+    console.log('[Updater] Downloaded', info.version, '— will install when you quit the app.');
+  });
+  autoUpdater.on('error', (err) => {
+    console.warn('[Updater]', err?.message || err);
+  });
+
+  autoUpdater.checkForUpdatesAndNotify().catch((e) => console.warn('[Updater] initial check:', e?.message || e));
+
+  const sixHoursMs = 6 * 60 * 60 * 1000;
+  setInterval(() => {
+    autoUpdater.checkForUpdates().catch((e) => console.warn('[Updater] check failed:', e?.message || e));
+  }, sixHoursMs);
+}
+
 // Invisible in Dock (macOS)
 if (process.platform === 'darwin') {
   app.dock.hide();
@@ -122,14 +156,19 @@ function createWindow() {
   if (app.isPackaged) {
     process.env.NODE_ENV = 'production'; // signal server to serve Vite Dist instead of HMR
     const serverModule = require(path.join(__dirname, '../../backend/api/server.cjs'));
-    if (serverModule && serverModule.startServer) {
-      serverModule.startServer().then((port) => {
-        win.loadURL(`http://localhost:${port}/app`);
-      }).catch(err => {
-        console.error('Failed to start embedded Node server:', err);
-      });
+    // Await serverBootstrap (not a second startServer()): avoids wrong port + loading /app before listen().
+    const boot = serverModule.serverBootstrap ?? serverModule.startServer?.();
+    if (boot && typeof boot.then === 'function') {
+      boot
+        .then((result) => {
+          const port = typeof result === 'number' ? result : parseInt(process.env.PORT || '3000', 10);
+          win.loadURL(`http://127.0.0.1:${port}/app`);
+        })
+        .catch((err) => {
+          console.error('Failed to start embedded Node server:', err);
+        });
     } else {
-      win.loadURL('http://localhost:3000/app');
+      win.loadURL('http://127.0.0.1:3000/app');
     }
   } else {
     win.loadURL('http://localhost:3000/app');
@@ -253,9 +292,8 @@ if (!gotTheLock) {
   app.whenReady().then(() => {
     createWindow();
 
-    // Check for updates natively if running inside the compiled .exe
     if (app.isPackaged) {
-      autoUpdater.checkForUpdatesAndNotify();
+      setupAutoUpdater();
     }
   });
 }

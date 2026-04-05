@@ -46,11 +46,28 @@ Update the filename in **`frontend/pages/LandingPage.tsx`** when you change vers
 
 ---
 
-## 4. Auto-updates (optional)
+## 4. Auto-updates (GitHub Releases)
 
-`electron-updater` is wired in `main.cjs`. `package.json` → `build.publish` should match **`owner/repo`** where you publish releases. Users must run a build that includes your **publish token** only in CI (never commit `GH_TOKEN`).
+**Who gets auto-updates?** Only users who installed the **NSIS Setup** build (e.g. `InterviewGuru Setup x.x.x.exe`), not the **portable** single `.exe`. On Windows, `electron-updater` is built for the installer flow; portable builds set `PORTABLE_EXECUTABLE_DIR` and the app skips the updater (those users download a new exe when you ship one).
 
-For manual-only updates, you can ignore auto-update until you add a secure pipeline.
+**What you must do each release**
+
+1. Bump **`package.json` → `version`** (e.g. `1.0.1` → `1.0.2`). The updater compares this to `latest.yml` on GitHub.
+2. Build and **upload the update metadata + installer** to the same GitHub repo as in `package.json` → `build.publish` (`owner` / `repo`).
+3. Easiest: from your machine (with a token that can upload release assets):
+
+   ```bash
+   set GH_TOKEN=ghp_your_token_here
+   npm run dist:publish
+   ```
+
+   That runs `electron-builder --publish always`, which creates **`latest.yml`** and the **Setup** installer on the draft/latest release (or attaches to the version tag). **Never commit the token.**
+
+   Manual alternative: run `npm run dist`, then on the GitHub Release attach **`latest.yml`** and the **`...Setup...exe`** from `release/` (names must match what `latest.yml` references).
+
+4. **`InterviewGuru.exe`** (portable copy for the website) can still be uploaded separately for “download and run”; that path stays **manual** re-download for users.
+
+**Runtime behavior:** On startup and about every **6 hours**, the installed app checks GitHub. If a newer version exists, it downloads in the background and installs **when the user quits** the app (Windows may show a SmartScreen prompt until you code-sign).
 
 ---
 

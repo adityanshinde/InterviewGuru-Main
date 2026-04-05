@@ -8,12 +8,13 @@ import { fileURLToPath } from 'url';
 import os from 'os';
 import { timingSafeEqual } from 'node:crypto';
 
-// tsup CJS bundle clears import.meta.url; tsx ESM has a real file: URL. Fallback keeps dotenv/build paths correct on Vercel.
-const metaUrl = import.meta.url;
-const __dirname =
-  typeof metaUrl === 'string' && metaUrl.startsWith('file:')
-    ? path.dirname(fileURLToPath(metaUrl))
-    : path.join(process.cwd(), 'backend', 'api');
+// Directory of this module. tsx (ESM): import.meta.url. Bundled server.cjs (Electron): Node's real __dirname — never use
+// process.cwd() here; packaged apps cwd is the exe folder, so ../../build would be wrong and the UI shows "Not Found".
+const apiDir =
+  typeof import.meta.url === 'string' && import.meta.url.startsWith('file:')
+    ? path.dirname(fileURLToPath(import.meta.url))
+    : // CJS bundle: tsup leaves this as the module __dirname (path to backend/api/server.cjs inside asar).
+      (typeof __dirname !== 'undefined' ? __dirname : path.join(process.cwd(), 'backend', 'api'));
 import { authMiddleware, clerkAuthMiddleware, quotaMiddleware } from '../middleware/authMiddleware';
 import { apiBurstLimiter } from '../middleware/rateLimiter';
 import {
@@ -91,7 +92,7 @@ function extractJSON(content: string): any {
 
 // Load env: optional root `.env`, then `backend/.env` (wins on duplicate keys)
 dotenv.config();
-dotenv.config({ path: path.join(__dirname, '../.env'), override: true });
+dotenv.config({ path: path.join(apiDir, '../.env'), override: true });
 
 function normalizeCorsOrigin(origin: string): string {
   return origin.trim().replace(/\/$/, '');
@@ -1145,7 +1146,7 @@ Rules:
     });
     app.use(vite.middlewares);
   } else {
-    const buildPath = path.join(__dirname, '../../build');
+    const buildPath = path.join(apiDir, '../../build');
     app.use(express.static(buildPath));
     
     // SPA Fallback for React Router
