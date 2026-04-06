@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "tsx watch backend/api/server.ts",
     "start": "tsx backend/api/server.ts",
+    "start:prod": "npm run build && node -e \"process.env.NODE_ENV='production'; require('./backend/api/server.cjs')\"",
+    "start:prod:win": "npm run build; $env:NODE_ENV='production'; node backend/api/server.cjs",
     "build:ui": "vite build",
     "build:server": "tsup",
     "build": "npm run build:ui && npm run build:server",

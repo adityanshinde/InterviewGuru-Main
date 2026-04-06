@@ -24,6 +24,7 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 	const getAuthHeaders = useApiAuthHeaders();
 	const [detectedQuestion, setDetectedQuestion] = useState<QuestionDetection | null>(null);
 	const [answer, setAnswer] = useState<Answer | null>(null);
+	const [liveAnswerText, setLiveAnswerText] = useState('');
 	const [isProcessing, setIsProcessing] = useState(false);
 	const [isSpeaking, setIsSpeaking] = useState(false);
 
@@ -228,6 +229,7 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 		if (!questionText.trim() || isProcessing) return;
 		try {
 			setIsProcessing(true);
+			setLiveAnswerText('');
 
 			const model = localStorage.getItem('groq_model') || 'llama-3.1-8b-instant';
 			const persona = localStorage.getItem('groq_persona') || 'Technical Interviewer';
@@ -235,40 +237,108 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 			const jd = localStorage.getItem('groq_jd') || '';
 			const auth = await getAuthHeaders();
 
-			const response = await fetch(API_ENDPOINT('/api/analyze'), {
+			const streamResponse = await fetch(API_ENDPOINT('/api/analyze/stream'), {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
 					'x-model': model,
 					'x-persona': persona,
 					'x-mode': 'chat',
-					Accept: 'application/json',
+					Accept: 'text/event-stream',
 					...optionalGroqApiKeyHeaders(),
 					...auth,
 				},
 				body: JSON.stringify({ transcript: questionText, resume, jd })
 			});
 
-			if (response.status === 401) {
+			if (streamResponse.status === 401) {
 				if (onError) onError('Sign in required.');
 				setIsProcessing(false);
 				return;
 			}
 
-			if (response.status === 402) {
-				const errData = await response.json();
+			if (streamResponse.status === 402) {
+				const errData = await streamResponse.json();
 				const errorMsg = errData.message || 'Monthly quota exceeded. Please upgrade your plan.';
 				if (onError) onError(errorMsg);
 				setIsProcessing(false);
 				return;
 			}
 
-			if (!response.ok) {
-				const errData = await response.json();
-				throw new Error(errData.error || errData.details || `Server HTTP Error: ${response.status}`);
+			if (!streamResponse.ok || !streamResponse.body) {
+				const fallbackResponse = await fetch(API_ENDPOINT('/api/analyze'), {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'x-model': model,
+						'x-persona': persona,
+						'x-mode': 'chat',
+						Accept: 'application/json',
+						...optionalGroqApiKeyHeaders(),
+						...auth,
+					},
+					body: JSON.stringify({ transcript: questionText, resume, jd })
+				});
+
+				if (!fallbackResponse.ok) {
+					const errData = await fallbackResponse.json();
+					throw new Error(errData.error || errData.details || `Server HTTP Error: ${fallbackResponse.status}`);
+				}
+
+				const data = await fallbackResponse.json();
+				const detectedQ = {
+					isQuestion: true,
+					question: questionText,
+					confidence: 1.0,
+					type: data.type || 'general'
+				};
+				setDetectedQuestion(detectedQ);
+				const ans: Answer = {
+					bullets: Array.isArray(data.bullets) ? data.bullets : [],
+					spoken: data.spoken || '',
+					explanation: data.explanation || data.answer || data.response || '',
+					code: data.code || '',
+					codeLanguage: data.codeLanguage || data.language || '',
+					sections: data.sections || [],
+				} as any;
+				setAnswer(ans);
+				playSpeech(data.spoken || '');
+				setLiveAnswerText('');
+				setIsProcessing(false);
+				return;
 			}
 
-			const data = await response.json();
+			const reader = streamResponse.body.getReader();
+			const decoder = new TextDecoder();
+			let buffer = '';
+			let finalData: any = null;
+
+			while (true) {
+				const { value, done } = await reader.read();
+				if (done) break;
+				buffer += decoder.decode(value, { stream: true });
+				const events = buffer.split('\n\n');
+				buffer = events.pop() || '';
+				for (const event of events) {
+					const dataLine = event
+						.split('\n')
+						.find((line) => line.startsWith('data: '));
+					if (!dataLine) continue;
+					const payload = JSON.parse(dataLine.slice(6));
+					if (payload.type === 'preview' && payload.text) {
+						setLiveAnswerText((prev) => prev + payload.text);
+					} else if (payload.type === 'final') {
+						finalData = payload.data;
+					} else if (payload.type === 'error') {
+						throw new Error(payload.error || 'Analyze stream failed');
+					}
+				}
+			}
+
+			const data = finalData;
+			if (!data) {
+				throw new Error('No final streamed payload received');
+			}
 
 			// For manual chat, we always treat it as a question regardless of detection
 			const detectedQ = {
@@ -290,11 +360,12 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 			} as any;
 			setAnswer(ans);
 			playSpeech(data.spoken || '');
-
+			setLiveAnswerText('');
 
 			setIsProcessing(false);
 		} catch (error: any) {
 			console.error('Chat AI Error:', error);
+			setLiveAnswerText('');
 			setIsProcessing(false);
 			if (onError) onError(error.message || 'Chat prompt failed. Check API key format.');
 		}
@@ -307,5 +378,5 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 		lastProcessedTextRef.current = '';
 	}, []);
 
-	return { detectedQuestion, answer, isProcessing, processTranscript, askQuestion, resetAssistant };
+	return { detectedQuestion, answer, liveAnswerText, isProcessing, processTranscript, askQuestion, resetAssistant };
 }

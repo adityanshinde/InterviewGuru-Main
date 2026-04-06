@@ -95,6 +95,46 @@ function extractJSON(content: string): any {
   }
 }
 
+function decodeJsonStringEscape(ch: string): string {
+  if (ch === 'n') return '\n';
+  if (ch === 'r') return '\r';
+  if (ch === 't') return '\t';
+  if (ch === '"') return '"';
+  if (ch === '\\') return '\\';
+  return ch;
+}
+
+/** Best-effort preview extractor from a partial JSON stream. */
+function extractPreviewExplanationFromJsonStream(partial: string): string {
+  const key = '"explanation"';
+  const keyIdx = partial.indexOf(key);
+  if (keyIdx < 0) return '';
+  const colonIdx = partial.indexOf(':', keyIdx + key.length);
+  if (colonIdx < 0) return '';
+  const openQuoteIdx = partial.indexOf('"', colonIdx + 1);
+  if (openQuoteIdx < 0) return '';
+
+  let out = '';
+  let escaped = false;
+  for (let i = openQuoteIdx + 1; i < partial.length; i++) {
+    const c = partial[i];
+    if (escaped) {
+      out += decodeJsonStringEscape(c);
+      escaped = false;
+      continue;
+    }
+    if (c === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (c === '"') {
+      break;
+    }
+    out += c;
+  }
+  return out.trim();
+}
+
 function normalizeCorsOrigin(origin: string): string {
   return origin.trim().replace(/\/$/, '');
 }
@@ -815,6 +855,128 @@ Rules:
     }
   });
 
+  /**
+   * Streaming variant for chat UX. Keeps existing /api/analyze unchanged and only streams
+   * a live explanation preview + final structured payload.
+   */
+  app.post("/api/analyze/stream", quotaMiddleware('chat'), async (req: express.Request, res) => {
+    try {
+      const customModel = (req.headers['x-model'] as string) || '';
+      const persona = (req.headers['x-persona'] as string) || 'Technical Interviewer';
+      const mode = (req.headers['x-mode'] as string) || 'chat';
+      const groq = getGroq(clientGroqKeyFromRequest(req));
+      const { transcript, resume, jd } = req.body || {};
+
+      if (mode !== 'chat') {
+        return res.status(400).json({ error: 'Streaming is currently supported for chat mode only' });
+      }
+      if (!transcript) {
+        return res.status(400).json({ error: "No transcript provided" });
+      }
+
+      const fastAnalyze = analyzeFastMode();
+      let questionType = 'concept';
+      let difficulty = 'medium';
+
+      if (!fastAnalyze) {
+        try {
+          const classifyCompletion = await groq.chat.completions.create({
+            messages: [
+              { role: 'system', content: buildQuestionClassificationPrompt() },
+              { role: 'user', content: `Classify: ${transcript}` },
+            ],
+            model: 'llama-3.1-8b-instant',
+            response_format: { type: 'json_object' },
+            temperature: 0.1,
+          });
+          const classifyData = extractJSON(classifyCompletion.choices[0]?.message?.content || '{}');
+          questionType = classifyData.type || 'concept';
+          difficulty = classifyData.difficulty || 'medium';
+        } catch {
+          // Keep defaults
+        }
+      }
+
+      const chatSystemPrompt = buildChatSystemPrompt({
+        questionType,
+        difficulty,
+        resume,
+        jd,
+        persona,
+      });
+
+      const chatModel = customModel || (fastAnalyze ? 'llama-3.1-8b-instant' : 'llama-3.3-70b-versatile');
+      const stream = await groq.chat.completions.create({
+        messages: [
+          { role: 'system', content: chatSystemPrompt },
+          { role: 'user', content: `Question: ${transcript}` },
+        ],
+        model: chatModel,
+        temperature: 0.4,
+        response_format: { type: 'json_object' },
+        stream: true,
+      });
+
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.flushHeaders?.();
+
+      const sendSse = (payload: any) => {
+        res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      };
+
+      let raw = '';
+      let sentPreview = '';
+      for await (const part of stream as any) {
+        const delta = part?.choices?.[0]?.delta?.content || '';
+        if (!delta) continue;
+        raw += delta;
+        const preview = extractPreviewExplanationFromJsonStream(raw);
+        if (preview && preview.length > sentPreview.length) {
+          const nextDelta = preview.slice(sentPreview.length);
+          sentPreview = preview;
+          sendSse({ type: 'preview', text: nextDelta });
+        }
+      }
+
+      const parsed = extractJSON(raw);
+      const authReqStream = req as AuthRequest;
+      if (authReqStream.user) {
+        await recordChatUsage(authReqStream.user.userId, 1);
+      }
+      sendSse({
+        type: 'final',
+        data: {
+          isQuestion: true,
+          question: transcript,
+          confidence: 1.0,
+          type: parsed.type || questionType || 'general',
+          difficulty: parsed.difficulty || difficulty || 'medium',
+          sections: Array.isArray(parsed.sections) ? parsed.sections : [],
+          code: parsed.code || '',
+          codeLanguage: parsed.codeLanguage || '',
+          explanation: parsed.explanation || '',
+          spoken: parsed.spoken || parsed.explanation || '',
+          bullets: Array.isArray(parsed.bullets) ? parsed.bullets : [],
+        },
+      });
+      sendSse({ type: 'done' });
+      res.end();
+    } catch (error: any) {
+      console.error('Analyze stream error:', error);
+      if (!res.headersSent) {
+        return res.status(error?.status || 500).json({ error: error?.message || 'Analyze stream failed' });
+      }
+      try {
+        res.write(`data: ${JSON.stringify({ type: 'error', error: error?.message || 'Analyze stream failed' })}\n\n`);
+      } catch {
+        // ignore write failures
+      }
+      res.end();
+    }
+  });
+
   // Background Cache Generator Endpoint (~8 chat units after success)
   app.post("/api/generate-cache", async (req: express.Request, res) => {
     const authReq = req as AuthRequest;
@@ -1037,13 +1199,21 @@ Rules:
     }
   });
 
-  // POST /api/upgrade — Upgrade user plan
+  // POST /api/upgrade — Upgrade user plan (dev / explicit opt-in only).
+  // In production, plan changes must come from a verified billing webhook (e.g. Stripe), not the browser.
   app.post('/api/upgrade', async (req: express.Request, res) => {
     try {
       const authReq = req as AuthRequest;
       
       if (!authReq.user) {
         return res.status(401).json({ error: 'User not authenticated' });
+      }
+
+      if (process.env.NODE_ENV === 'production' && !truthyEnv(process.env.ALLOW_CLIENT_PLAN_UPGRADE)) {
+        return res.status(403).json({
+          error: 'Plan is assigned through billing. Client-initiated upgrades are disabled.',
+          code: 'upgrade_via_billing_only',
+        });
       }
 
       const { newPlan } = req.body;

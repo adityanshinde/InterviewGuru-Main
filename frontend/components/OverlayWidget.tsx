@@ -424,7 +424,7 @@ export default function OverlayWidget() {
   };
 
   const onError = useCallback((msg: string) => showAlert(msg, 'error'), [showAlert]);
-  const { detectedQuestion, answer, isProcessing, processTranscript, askQuestion, resetAssistant } = useAIAssistant(undefined, onError);
+  const { detectedQuestion, answer, liveAnswerText, isProcessing, processTranscript, askQuestion, resetAssistant } = useAIAssistant(undefined, onError);
   const { isListening, isRateLimited, transcript, startListening, stopListening, clearTranscript } = useTabAudioCapture(
     processTranscript,
     onError
@@ -1216,6 +1216,15 @@ export default function OverlayWidget() {
                   <div className="typing-bubble">
                     <span className="ai-persona-label">🤖 Interview Coach</span>
                     <div className="typing-dots"><span /><span /><span /></div>
+                  </div>
+                </div>
+              )}
+              {isProcessing && activeTab === 'chat' && liveAnswerText.trim() && (
+                <div className="ai-typing-indicator">
+                  <div className="ai-avatar-wrap"><Brain size={13} /></div>
+                  <div className="typing-bubble">
+                    <span className="ai-persona-label">🤖 Live Draft</span>
+                    <p className="ai-summary whitespace-pre-wrap">{liveAnswerText}</p>
                   </div>
                 </div>
               )}
