@@ -180,6 +180,14 @@ If **`DATABASE_URL`** is missing or the DB never connects, the API falls back to
 
 Set **`DATABASE_URL`** on the Vercel project to your **Neon** (or other Postgres) URL and run **`npm run db:migrate`** so **`ig_users`** exists. Then **`isDBConnected()`** is true and usage uses Postgres — no file path involved.
 
+### Neon + Vercel: `Connection terminated due to connection timeout`
+
+Neon **cold start** (compute asleep) and **`channel_binding=require`** in the URL can make **node-pg** fail quickly on serverless.
+
+**Code (already in repo):** strip **`channel_binding`** from the URL before connecting, use **60s** `connectionTimeoutMillis` on Vercel, and **3 retries** with backoff on transient errors.
+
+You can also remove **`&channel_binding=require`** from **`DATABASE_URL`** in the Vercel UI and keep **`sslmode=require`**.
+
 ---
 
 ## 6. Quick reference: env vars
