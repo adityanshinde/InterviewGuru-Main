@@ -2,8 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Mic, MicOff, X, Sparkles, Activity, History, Download,
   EyeOff, Keyboard, MessageSquare, Send, AlertTriangle, CheckCircle,
-  Trash2, Loader2, Copy, RefreshCw, ChevronRight,
-  Zap, Brain, ThumbsUp, ThumbsDown, User
+  Trash2, Loader2, Copy, RefreshCw, ChevronRight, ArrowLeft,
+  Zap, Brain, ThumbsUp, ThumbsDown, User, Minimize2, Maximize2,
 } from 'lucide-react';
 import { useTabAudioCapture } from '../hooks/useTabAudioCapture';
 import { useAIAssistant } from '../hooks/useAIAssistant';
@@ -15,20 +15,15 @@ import { API_ENDPOINT } from '../../shared/utils/config';
 import { optionalGroqApiKeyHeaders } from '../utils/optionalGroqApiKeyHeaders';
 import { useApiAuthHeaders } from '../providers/ApiAuthContext';
 import { UserButton } from '@clerk/clerk-react';
+import { Link } from 'react-router-dom';
+import { hasAnyClerkPublishableKey } from '../utils/clerkPublishableKey';
 
-const clerkUiEnabled = !!import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+const clerkUiEnabled = hasAnyClerkPublishableKey();
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { getElectronIpc } from '../utils/electronIpc';
 
-let ipc: any = null;
-if (typeof window !== 'undefined') {
-  const win = window as any;
-  if (win.require) {
-    try { ipc = win.require('electron').ipcRenderer; } catch (e) { console.warn('IPC not found', e); }
-  }
-  if (!ipc && win.electron?.ipcRenderer) ipc = win.electron.ipcRenderer;
-  if (!ipc && win.ipcRenderer) ipc = win.ipcRenderer;
-}
+const ipc = typeof window !== 'undefined' ? getElectronIpc() : null;
 
 export function cn(...inputs: (string | undefined | null | false)[]) {
   return twMerge(clsx(inputs));
@@ -371,11 +366,59 @@ export default function OverlayWidget() {
 
   const handleResizeDrag = (e: React.MouseEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     if (!ipc) return;
-    const startX = e.screenX, startY = e.screenY;
-    const initialWidth = window.outerWidth, initialHeight = window.outerHeight;
-    const onMove = (ev: MouseEvent) => ipc.send('resize-window', initialWidth + (ev.screenX - startX), initialHeight + (ev.screenY - startY));
-    const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+    const startX = e.screenX;
+    const startY = e.screenY;
+    const initialWidth = window.outerWidth;
+    const initialHeight = window.outerHeight;
+    const onMove = (ev: MouseEvent) => {
+      ipc.send(
+        'resize-window',
+        initialWidth + (ev.screenX - startX),
+        initialHeight + (ev.screenY - startY)
+      );
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
+
+  const handleResizeDragRight = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!ipc) return;
+    const startX = e.screenX;
+    const w0 = window.outerWidth;
+    const h0 = window.outerHeight;
+    const onMove = (ev: MouseEvent) => {
+      ipc.send('resize-window', w0 + (ev.screenX - startX), h0);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
+
+  const handleResizeDragBottom = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!ipc) return;
+    const startY = e.screenY;
+    const w0 = window.outerWidth;
+    const h0 = window.outerHeight;
+    const onMove = (ev: MouseEvent) => {
+      ipc.send('resize-window', w0, h0 + (ev.screenY - startY));
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   };
@@ -525,16 +568,14 @@ export default function OverlayWidget() {
     return () => clearInterval(iv);
   }, [sessionStartTime, isListening]);
 
+  // Refetch quotas after a completed answer (chat/voice), not on every transcript tick — avoids /api/usage spam during live STT.
   useEffect(() => {
-    if (answer || (transcript && transcript.length > 0)) {
-      const timer = setTimeout(() => {
-        if (planStatus.refetch) {
-          planStatus.refetch().catch(err => console.error('Failed to refetch quotas:', err));
-        }
-      }, 2500);
-      return () => clearTimeout(timer);
-    }
-  }, [answer, transcript, planStatus.refetch]);
+    if (!answer) return;
+    const timer = setTimeout(() => {
+      planStatus.refetch?.().catch(err => console.error('Failed to refetch quotas:', err));
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, [answer, planStatus.refetch]);
 
   const saveSettings = () => {
     localStorage.setItem('groq_api_key', apiKey);
@@ -617,6 +658,30 @@ export default function OverlayWidget() {
     setTimeout(() => setCopiedAlert(false), 2000);
   };
 
+  const isElectronShell = typeof navigator !== 'undefined' && /electron/i.test(navigator.userAgent);
+  /** Frameless window: macOS uses native traffic lights; Windows/Linux need in-app min/max. */
+  const isMacElectron =
+    isElectronShell &&
+    (navigator.userAgent.includes('Mac') || (typeof navigator.platform === 'string' && navigator.platform.startsWith('Mac')));
+  const showWinFrameButtons = isElectronShell && ipc && !isMacElectron;
+
+  useEffect(() => {
+    if (!isElectronShell) return;
+    document.documentElement.classList.add('ig-electron');
+    return () => document.documentElement.classList.remove('ig-electron');
+  }, [isElectronShell]);
+
+  const igRootStyle: React.CSSProperties = isElectronShell
+    ? (() => {
+        const t = opacity / 100;
+        const a = 0.06 + t * 0.9;
+        return {
+          background: `linear-gradient(160deg, rgba(2,11,24,${(a * 0.96).toFixed(3)}) 0%, rgba(3,13,30,${(a * 0.93).toFixed(3)}) 60%, rgba(5,12,26,${(a * 0.96).toFixed(3)}) 100%)`,
+          ['--ig-grid-opacity' as string]: String(0.08 + t * 0.45),
+        };
+      })()
+    : { opacity: opacity / 100 };
+
   const handleRefine = async (type: 'shorter' | 'examples') => {
     if (!history[0] || isProcessing) return;
     const refinedQ = type === 'shorter'
@@ -640,7 +705,7 @@ export default function OverlayWidget() {
   return (
     <div
       className="ig-root flex flex-col font-sans relative pointer-events-auto h-full w-full overflow-hidden"
-      style={{ opacity: opacity / 100 }}
+      style={igRootStyle}
     >
       {appAlert && (
         <div className="toast-wrap">
@@ -658,18 +723,31 @@ export default function OverlayWidget() {
         </div>
       )}
 
-      <div className="ig-topbar" style={{ WebkitAppRegion: 'drag' } as any}>
-        <div className="ig-brand no-drag">
-          <div className="ig-logo-wrap">
-            <img src="/icon.png" alt="IG" className="w-full h-full object-contain" />
-          </div>
-          <div className="ig-brand-text">
-            <span className="ig-brand-name">InterviewGuru</span>
-            <span className={cn('ig-mode-pill', activeTab === 'voice' ? 'voice' : 'chat', isListening && activeTab === 'voice' && 'live')}>
-              {activeTab === 'voice'
-                ? <><span className={cn('mode-dot', isListening && 'live')} />{isListening ? 'Recording Live' : 'Voice Mode'}</>
-                : <><MessageSquare size={8} />Chat · {persona.split(' ')[0]}</>}
-            </span>
+      <div
+        className={cn('ig-topbar', isMacElectron && 'ig-topbar-mac')}
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      >
+        <div className="no-drag flex min-w-0 max-w-[46%] flex-1 items-center gap-2 sm:max-w-none sm:flex-none">
+          <Link
+            to="/"
+            className="flex shrink-0 items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:border-white/18 hover:bg-white/[0.07] hover:text-white"
+            title="Back to marketing home"
+          >
+            <ArrowLeft size={14} strokeWidth={2.25} aria-hidden />
+            <span className="hidden min-[420px]:inline">Home</span>
+          </Link>
+          <div className="ig-brand min-w-0">
+            <div className="ig-logo-wrap">
+              <img src="/icon.png" alt="IG" className="w-full h-full object-contain" />
+            </div>
+            <div className="ig-brand-text">
+              <span className="ig-brand-name">InterviewGuru</span>
+              <span className={cn('ig-mode-pill', activeTab === 'voice' ? 'voice' : 'chat', isListening && activeTab === 'voice' && 'live')}>
+                {activeTab === 'voice'
+                  ? <><span className={cn('mode-dot', isListening && 'live')} />{isListening ? 'Recording Live' : 'Voice Mode'}</>
+                  : <><MessageSquare size={8} />Chat · {persona.split(' ')[0]}</>}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -716,6 +794,19 @@ export default function OverlayWidget() {
             <History size={13} />
           </button>
 
+          {clerkUiEnabled && (
+            <div className="flex shrink-0 items-center" title="Account">
+              <UserButton
+                afterSignOutUrl="/"
+                appearance={{
+                  elements: {
+                    avatarBox: 'w-7 h-7 ring-1 ring-white/15',
+                  },
+                }}
+              />
+            </div>
+          )}
+
           <button
             onClick={() => setShowSettings(!showSettings)}
             className={cn('icon-btn', showSettings && 'active')}
@@ -735,9 +826,36 @@ export default function OverlayWidget() {
             {isListening ? <MicOff size={13} /> : <Mic size={13} />}
           </button>
 
+          {showWinFrameButtons && (
+            <>
+              <button
+                type="button"
+                onClick={() => ipc?.send('window-minimize')}
+                className="icon-btn"
+                title="Minimize"
+              >
+                <Minimize2 size={13} strokeWidth={2.25} />
+              </button>
+              <button
+                type="button"
+                onClick={() => ipc?.send('window-maximize-toggle')}
+                className="icon-btn"
+                title="Maximize / restore"
+              >
+                <Maximize2 size={13} strokeWidth={2.25} />
+              </button>
+            </>
+          )}
           {ipc && (
             <button
-              onClick={() => { if (ipc) { ipc.send('QUIT_NOW'); ipc.send('close-app'); } window.close(); }}
+              type="button"
+              onClick={() => {
+                if (ipc) {
+                  ipc.send('QUIT_NOW');
+                  ipc.send('close-app');
+                }
+                window.close();
+              }}
               className="icon-btn close-btn"
               title="Close"
             >
@@ -786,16 +904,6 @@ export default function OverlayWidget() {
             <div className="overlay-header">
               <h2 className="overlay-title">⚙ Configuration</h2>
               <div className="flex items-center gap-1">
-                {clerkUiEnabled && (
-                  <UserButton
-                    afterSignOutUrl="/"
-                    appearance={{
-                      elements: {
-                        avatarBox: 'w-7 h-7',
-                      },
-                    }}
-                  />
-                )}
                 <button onClick={() => setShowSettings(false)} className="icon-btn"><X size={13} /></button>
               </div>
             </div>
@@ -862,9 +970,14 @@ export default function OverlayWidget() {
 
               <div className="setting-group">
                 <div className="flex justify-between items-center">
-                  <label className="setting-label">Opacity</label>
+                  <label className="setting-label">{isElectronShell ? 'See-through' : 'Opacity'}</label>
                   <span className="text-[10px] text-cyan-400 font-mono">{opacity}%</span>
                 </div>
+                {isElectronShell && (
+                  <p className="text-[10px] text-white/45 mb-1.5 leading-snug">
+                    Lower = more of your screen behind the app shows through (desktop window is transparent). Text and controls stay sharp.
+                  </p>
+                )}
                 <input type="range" min="10" max="100" value={opacity} onChange={e => setOpacity(parseInt(e.target.value))} className="range-input" />
               </div>
 
@@ -1194,11 +1307,33 @@ export default function OverlayWidget() {
       </div>
 
       {ipc && (
-        <div onMouseDown={handleResizeDrag} className="resize-handle" title="Drag to resize">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <path d="M21 15L15 21M21 8L8 21" />
-          </svg>
-        </div>
+        <>
+          {/* Frameless windows: no native edge resize on Windows — thin hit targets + corner grip */}
+          <div
+            role="presentation"
+            onMouseDown={handleResizeDragRight}
+            className="win-resize-edge win-resize-edge-right no-drag"
+            title="Drag to resize width"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          />
+          <div
+            role="presentation"
+            onMouseDown={handleResizeDragBottom}
+            className="win-resize-edge win-resize-edge-bottom no-drag"
+            title="Drag to resize height"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          />
+          <div
+            onMouseDown={handleResizeDrag}
+            className="resize-handle no-drag"
+            title="Drag corner to resize"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M21 15L15 21M21 8L8 21" />
+            </svg>
+          </div>
+        </>
       )}
     </div>
   );

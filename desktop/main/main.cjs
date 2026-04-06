@@ -1,6 +1,8 @@
 const { app, BrowserWindow, globalShortcut, desktopCapturer, ipcMain } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
+const fs = require('fs');
+const dotenv = require('dotenv');
 
 /**
  * NSIS-installed app: auto-update from GitHub Releases (needs latest.yml + Setup on each release).
@@ -46,22 +48,70 @@ app.name = 'InterviewGuru';
 let win = null;
 
 function createWindow() {
-  win = new BrowserWindow({
-    width: 1400,
-    height: 900,
+  /** Option A: load production https:// site (pk_live + Clerk OK). Requires INTERVIEWGURU_WEB_APP_URL in packaged .env */
+  let useRemoteWeb = false;
+  let remoteAppUrl = '';
+
+  if (app.isPackaged) {
+    process.env.NODE_ENV = 'production';
+    const envPaths = [
+      path.join(process.resourcesPath, '.env'),
+      path.join(path.dirname(process.execPath), '.env'),
+    ];
+    for (const envPath of envPaths) {
+      if (fs.existsSync(envPath)) {
+        dotenv.config({ path: envPath });
+        console.log('[InterviewGuru] Loaded', envPath);
+        break;
+      }
+    }
+    const base = process.env.INTERVIEWGURU_WEB_APP_URL?.trim();
+    if (base) {
+      useRemoteWeb = true;
+      remoteAppUrl = `${base.replace(/\/$/, '')}/app`;
+    } else {
+      if (!process.env.PORT) {
+        process.env.PORT = '3000';
+      }
+      process.env.INTERVIEWGURU_USAGE_STORE = path.join(app.getPath('userData'), 'usage-store.json');
+    }
+  }
+
+  /**
+   * True desktop see-through (Parakeet-style overlay): Electron requires frameless + transparent.
+   * Windows with frame:true + transparent often stays visually opaque (DWM paints a solid backing).
+   */
+  /** Default size: comfortable on 1080p / 1366×768 without dominating the screen */
+  const winOpts = {
+    width: 953,
+    height: 744,
     minWidth: 800,
     minHeight: 600,
     resizable: true,
     alwaysOnTop: true,
     frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
     hasShadow: true,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-      backgroundThrottling: false, // Prevents background tabs from sleeping (needed for audio APIs without focus)
-      devTools: !app.isPackaged, // Disable DevTools when compiled into the .exe completely saving ~80MB RAM
+      preload: useRemoteWeb ? path.join(__dirname, 'preload.cjs') : undefined,
+      nodeIntegration: !useRemoteWeb,
+      contextIsolation: useRemoteWeb,
+      backgroundThrottling: false,
+      devTools: !app.isPackaged,
     },
-  });
+  };
+  if (process.platform === 'darwin') {
+    winOpts.titleBarStyle = 'hidden';
+    winOpts.trafficLightPosition = { x: 14, y: 16 };
+  }
+  win = new BrowserWindow(winOpts);
+
+  try {
+    win.setBackgroundColor('#00000000');
+  } catch (e) {
+    console.warn('[Window] setBackgroundColor:', e?.message || e);
+  }
 
   // Windows-specific resize handling
   if (process.platform === 'win32') {
@@ -144,34 +194,41 @@ function createWindow() {
   });
 
   // ============================================================
-  // Open DevTools in development for debugging
-  // ============================================================
-  if (!app.isPackaged) {
-    win.webContents.openDevTools({ mode: 'detach' });
-  }
-
-  // ============================================================
-  // START BACKEND DURING PACKAGED INJECTIONS
+  // Packaged: production URL (Option A) OR embedded local server
   // ============================================================
   if (app.isPackaged) {
-    process.env.NODE_ENV = 'production'; // signal server to serve Vite Dist instead of HMR
-    const serverModule = require(path.join(__dirname, '../../backend/api/server.cjs'));
-    // Await serverBootstrap (not a second startServer()): avoids wrong port + loading /app before listen().
-    const boot = serverModule.serverBootstrap ?? serverModule.startServer?.();
-    if (boot && typeof boot.then === 'function') {
-      boot
-        .then((result) => {
-          const port = typeof result === 'number' ? result : parseInt(process.env.PORT || '3000', 10);
-          win.loadURL(`http://127.0.0.1:${port}/app`);
-        })
-        .catch((err) => {
-          console.error('Failed to start embedded Node server:', err);
-        });
+    if (useRemoteWeb) {
+      console.log('[InterviewGuru] Loading remote app (Clerk uses your real domain):', remoteAppUrl);
+      win.loadURL(remoteAppUrl);
     } else {
-      win.loadURL('http://127.0.0.1:3000/app');
+      const serverModule = require(path.join(__dirname, '../../backend/api/server.cjs'));
+      const boot = serverModule.serverBootstrap ?? serverModule.startServer?.();
+      if (boot && typeof boot.then === 'function') {
+        boot
+          .then((result) => {
+            const port = typeof result === 'number' ? result : parseInt(process.env.PORT || '3000', 10);
+            win.loadURL(`http://127.0.0.1:${port}/app`);
+          })
+          .catch((err) => {
+            console.error('Failed to start embedded Node server:', err);
+          });
+      } else {
+        win.loadURL('http://127.0.0.1:3000/app');
+      }
     }
   } else {
-    win.loadURL('http://localhost:3000/app');
+    const devPort = process.env.INTERVIEWGURU_DEV_PORT;
+    const port =
+      devPort && /^\d+$/.test(devPort.trim())
+        ? parseInt(devPort.trim(), 10)
+        : 3000;
+    win.loadURL(`http://127.0.0.1:${port}/app`);
+  }
+
+  if (!app.isPackaged) {
+    win.webContents.once('did-finish-load', () => {
+      win.webContents.openDevTools({ mode: 'detach' });
+    });
   }
 
   // ============================================================
@@ -204,15 +261,28 @@ function createWindow() {
   });
 
   ipcMain.on('resize-window', (event, newWidth, newHeight) => {
-    if (win) {
-      const bounds = win.getBounds();
-      win.setBounds({
-        x: bounds.x,
-        y: bounds.y,
-        width: Math.floor(Math.max(400, newWidth)),
-        height: Math.floor(Math.max(500, newHeight))
-      });
+    if (!win) return;
+    /** Maximized windows ignore setBounds until restored (Windows frameless). */
+    if (win.isMaximized()) {
+      win.unmaximize();
     }
+    const bounds = win.getBounds();
+    win.setBounds({
+      x: bounds.x,
+      y: bounds.y,
+      width: Math.floor(Math.max(400, Number(newWidth) || bounds.width)),
+      height: Math.floor(Math.max(500, Number(newHeight) || bounds.height)),
+    });
+  });
+
+  ipcMain.on('window-minimize', () => {
+    if (win) win.minimize();
+  });
+
+  ipcMain.on('window-maximize-toggle', () => {
+    if (!win) return;
+    if (win.isMaximized()) win.unmaximize();
+    else win.maximize();
   });
 
   // Emergency Global Quit Shortcut

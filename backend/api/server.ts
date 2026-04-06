@@ -1,6 +1,6 @@
+import './loadEnvFirst';
 import express from 'express';
 import { createServer } from 'http';
-import dotenv from 'dotenv';
 import Groq from 'groq-sdk';
 import fs from 'fs';
 import path from 'path';
@@ -15,6 +15,7 @@ const apiDir =
     ? path.dirname(fileURLToPath(import.meta.url))
     : // CJS bundle: tsup leaves this as the module __dirname (path to backend/api/server.cjs inside asar).
       (typeof __dirname !== 'undefined' ? __dirname : path.join(process.cwd(), 'backend', 'api'));
+
 import { authMiddleware, clerkAuthMiddleware, quotaMiddleware } from '../middleware/authMiddleware';
 import { apiBurstLimiter } from '../middleware/rateLimiter';
 import {
@@ -23,6 +24,7 @@ import {
   getRemainingQuota,
   upgradeUserPlan,
   getUserFromDB,
+  createUserInDB,
   resetMonthlyUsageIfNeeded,
   checkTrialExpired,
   calculateTrialDaysRemaining,
@@ -40,6 +42,9 @@ import {
   buildVoiceQuestionConfidencePrompt,
   buildVoiceSystemPrompt,
 } from '../../shared/prompts';
+
+/** Written in dev when the HTTP server listens — Electron dev launcher reads this so it loads the same port (3000, 3001, …). */
+const interviewGuruDevPortFile = path.join(apiDir, '..', '..', '.interviewguru-dev-port');
 
 // ════════════════════════════════════════════════════════════════
 // VECTOR CACHE (Pre-Interview Generation to drastically reduce latency)
@@ -90,10 +95,6 @@ function extractJSON(content: string): any {
   }
 }
 
-// Load env: optional root `.env`, then `backend/.env` (wins on duplicate keys)
-dotenv.config();
-dotenv.config({ path: path.join(apiDir, '../.env'), override: true });
-
 function normalizeCorsOrigin(origin: string): string {
   return origin.trim().replace(/\/$/, '');
 }
@@ -109,13 +110,11 @@ function buildCorsAllowlist(): Set<string> {
     }
   }
   if (process.env.NODE_ENV !== 'production') {
-    for (const d of [
-      'http://localhost:5173',
-      'http://localhost:3000',
-      'http://127.0.0.1:5173',
-      'http://127.0.0.1:3000',
-    ]) {
-      set.add(d);
+    set.add('http://localhost:5173');
+    set.add('http://127.0.0.1:5173');
+    for (let p = 3000; p <= 3010; p++) {
+      set.add(`http://localhost:${p}`);
+      set.add(`http://127.0.0.1:${p}`);
     }
   }
   const vercelUrl = process.env.VERCEL_URL?.trim();
@@ -166,11 +165,19 @@ function byokModeEnabled(): boolean {
  * Fewer / cheaper Groq calls and smaller chat model — lower latency, some quality tradeoff.
  * ON by default when BYOK_MODE is set (live-interview UX). Opt out with ANALYZE_FULL_PIPELINE=true.
  * Or force on anytime with ANALYZE_FAST_MODE=true.
+ * Local dev defaults to fast (8b) so /api/analyze is not 10s+ from 70b + extra rounds; use ANALYZE_FULL_PIPELINE=true to test the slow path.
  */
 function analyzeFastMode(): boolean {
   if (truthyEnv(process.env.ANALYZE_FULL_PIPELINE)) return false;
   if (truthyEnv(process.env.ANALYZE_FAST_MODE)) return true;
+  if (process.env.NODE_ENV !== 'production') return true;
   return byokModeEnabled();
+}
+
+/** Embedding + Xenova model load can take seconds on first hit; skip in dev unless ANALYZE_VECTOR_CACHE=true. */
+function vectorCacheLookupEnabled(): boolean {
+  if (process.env.NODE_ENV === 'production') return true;
+  return truthyEnv(process.env.ANALYZE_VECTOR_CACHE);
 }
 
 /** When false in production, `x-api-key` is ignored unless BYOK_MODE or ALLOW_CLIENT_GROQ_KEY is on. */
@@ -240,6 +247,10 @@ export async function startServer(): Promise<number | express.Express> {
     next();
   });
 
+  // Clerk must run as global middleware so AsyncLocalStorage is set before any getAuth()
+  // (rate limiter keyGenerator, authMiddleware, etc.). Mounting only under /api breaks that contract.
+  app.use(clerkAuthMiddleware);
+
   app.get('/api/health', async (req, res) => {
     const deep =
       req.query.deep === '1' ||
@@ -299,7 +310,6 @@ export async function startServer(): Promise<number | express.Express> {
     }
   });
 
-  app.use('/api', clerkAuthMiddleware);
   app.use('/api', apiBurstLimiter);
   app.use('/api', authMiddleware);
 
@@ -491,7 +501,11 @@ export async function startServer(): Promise<number | express.Express> {
       // FAST LOOKUP — Vector Cache Match
       // ════════════════════════════════════════════════════════════════
       try {
-        if (vectorCache.length > 0 && (mode === 'chat' || mode === 'voice')) {
+        if (
+          vectorCacheLookupEnabled() &&
+          vectorCache.length > 0 &&
+          (mode === 'chat' || mode === 'voice')
+        ) {
           const emb = await getEmbedding(transcript);
           
           let topMatches = [];
@@ -624,6 +638,9 @@ Rules:
         if (supportsLogprobs(chatModel)) {
           chatParams.logprobs = true;
         }
+        if (fastAnalyze) {
+          chatParams.max_tokens = 1536;
+        }
 
         const chatCompletion = await groq.chat.completions.create(chatParams);
 
@@ -733,6 +750,9 @@ Rules:
 
         if (supportsLogprobs(selectedVoiceModel)) {
           voiceParams.logprobs = true;
+        }
+        if (fastAnalyze) {
+          voiceParams.max_tokens = 768;
         }
 
         const voiceCompletion = await groq.chat.completions.create(voiceParams);
@@ -922,14 +942,42 @@ Rules:
 
   // GET /api/usage — Get user's current usage + remaining quotas
   app.get('/api/usage', async (req: express.Request, res) => {
+    const pct = (used: number, limit: number) =>
+      !limit || limit <= 0 ? 0 : (used / limit) * 100;
+
     try {
       const authReq = req as AuthRequest;
-      
+
       if (!authReq.user) {
         return res.status(401).json({ error: 'User not authenticated' });
       }
 
-      const user = await getUserFromDB(authReq.user.userId);
+      let user: Awaited<ReturnType<typeof getUserFromDB>>;
+      try {
+        user = await getUserFromDB(authReq.user.userId);
+      } catch (dbErr) {
+        console.error('[api/usage] getUserFromDB failed:', dbErr);
+        return res.status(503).json({
+          error: 'Database error while loading usage',
+          ...(process.env.NODE_ENV !== 'production'
+            ? { detail: dbErr instanceof Error ? dbErr.message : String(dbErr) }
+            : {}),
+        });
+      }
+
+      if (!user) {
+        try {
+          user = await createUserInDB(authReq.user.userId, authReq.user.email || '');
+        } catch (createErr) {
+          console.error('[api/usage] createUserInDB failed:', createErr);
+          return res.status(503).json({
+            error: 'Could not create usage profile',
+            ...(process.env.NODE_ENV !== 'production'
+              ? { detail: createErr instanceof Error ? createErr.message : String(createErr) }
+              : {}),
+          });
+        }
+      }
 
       if (!user) {
         return res.status(404).json({ error: 'User not found' });
@@ -950,19 +998,19 @@ Rules:
             used: user.voiceMinutesUsed,
             limit: planConfig.voiceMinutesPerMonth,
             remaining: Math.max(0, planConfig.voiceMinutesPerMonth - user.voiceMinutesUsed),
-            percentUsed: (user.voiceMinutesUsed / planConfig.voiceMinutesPerMonth) * 100,
+            percentUsed: pct(user.voiceMinutesUsed, planConfig.voiceMinutesPerMonth),
           },
           chatMessages: {
             used: user.chatMessagesUsed,
             limit: planConfig.chatMessagesPerMonth,
             remaining: Math.max(0, planConfig.chatMessagesPerMonth - user.chatMessagesUsed),
-            percentUsed: (user.chatMessagesUsed / planConfig.chatMessagesPerMonth) * 100,
+            percentUsed: pct(user.chatMessagesUsed, planConfig.chatMessagesPerMonth),
           },
           sessions: {
             used: user.sessionsUsed,
             limit: planConfig.sessionsPerMonth,
             remaining: Math.max(0, planConfig.sessionsPerMonth - user.sessionsUsed),
-            percentUsed: (user.sessionsUsed / planConfig.sessionsPerMonth) * 100,
+            percentUsed: pct(user.sessionsUsed, planConfig.sessionsPerMonth),
           },
         },
         features: planConfig.features,
@@ -980,7 +1028,12 @@ Rules:
       res.json(response);
     } catch (error) {
       console.error('Usage endpoint error:', error);
-      res.status(500).json({ error: 'Failed to fetch usage data' });
+      res.status(500).json({
+        error: 'Failed to fetch usage data',
+        ...(process.env.NODE_ENV !== 'production'
+          ? { detail: error instanceof Error ? error.message : String(error) }
+          : {}),
+      });
     }
   });
 
@@ -1140,9 +1193,17 @@ Rules:
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const viteModule = await import('vite');
+    const repoRoot = path.join(apiDir, '..', '..');
     const vite = await viteModule.createServer({
-      server: { middlewareMode: true },
+      root: repoRoot,
+      configFile: path.join(repoRoot, 'vite.config.ts'),
+      server: {
+        middlewareMode: true,
+        /** Same HTTP server as Express so HMR WebSocket is not a separate port (24678) that returns 400. */
+        hmr: { server: httpServer },
+      },
       appType: 'spa',
+      mode: 'development',
     });
     app.use(vite.middlewares);
   } else {
@@ -1160,18 +1221,44 @@ Rules:
   }
 
   return new Promise((resolve) => {
+    let wroteDevPortMarker = false;
+    const clearDevPortMarker = () => {
+      if (!wroteDevPortMarker) return;
+      try {
+        fs.unlinkSync(interviewGuruDevPortFile);
+      } catch {
+        /* ignore */
+      }
+    };
     const startListen = (port: number) => {
-      httpServer.listen(port, '0.0.0.0', () => {
-        console.log(`Server running on http://localhost:${port}`);
-        resolve(port);
-      }).on('error', (err: any) => {
-        if (err.code === 'EADDRINUSE') {
-          console.warn(`[Server] Port ${port} is in use, trying ${port + 1}...`);
-          startListen(port + 1);
-        } else {
-          console.error(err);
-        }
-      });
+      httpServer
+        .listen(port, '0.0.0.0', () => {
+          console.log(`Server running on http://localhost:${port}`);
+          const isDevListen =
+            !process.env.VERCEL &&
+            !process.env.AWS_LAMBDA_FUNCTION_NAME &&
+            process.env.NODE_ENV !== 'production';
+          if (isDevListen) {
+            try {
+              fs.writeFileSync(interviewGuruDevPortFile, String(port), 'utf8');
+              wroteDevPortMarker = true;
+            } catch (e) {
+              console.warn('[Server] Could not write .interviewguru-dev-port:', (e as Error)?.message || e);
+            }
+            process.once('SIGINT', clearDevPortMarker);
+            process.once('SIGTERM', clearDevPortMarker);
+            process.once('exit', clearDevPortMarker);
+          }
+          resolve(port);
+        })
+        .on('error', (err: any) => {
+          if (err.code === 'EADDRINUSE') {
+            console.warn(`[Server] Port ${port} is in use, trying ${port + 1}...`);
+            startListen(port + 1);
+          } else {
+            console.error(err);
+          }
+        });
     };
     startListen(initialPort);
   });

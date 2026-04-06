@@ -1,29 +1,38 @@
 /**
  * electron-dev.cjs
- * Bulletproof cross-platform Electron launcher for Windows.
- * 1. Spawns `tsx backend/api/server.ts` with output visible in terminal
- * 2. Polls TCP port 3000 every second (no HTTP needed — just TCP connect)
- * 3. Once port is open → launches Electron
- * 4. When Electron closes → kills server and exits
+ * Cross-platform Electron dev launcher.
+ * 1. Spawns `tsx backend/api/server.ts` (stdio to terminal)
+ * 2. Waits until the server writes `.interviewguru-dev-port` with its bound port
+ *    (Express may use 3001+ if 3000 is taken — Electron must load that same port)
+ * 3. Launches Electron with INTERVIEWGURU_DEV_PORT so main.cjs opens the correct URL
+ * 4. When Electron exits → stops the server
  */
 
-const net = require('net');
+const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '../..');
+const DEV_PORT_FILE = path.join(ROOT, '.interviewguru-dev-port');
 
-// ── 1. Start the backend server ───────────────────────────────────────────
+try {
+  fs.unlinkSync(DEV_PORT_FILE);
+} catch {
+  /* no stale file */
+}
+
 console.log('\n🚀 [InterviewGuru] Starting backend server...\n');
 
-const serverProcess = spawn(
-  'npx', ['tsx', 'backend/api/server.ts'],
-  {
-    cwd: ROOT,
-    stdio: 'inherit',  // Print server logs directly to this terminal
-    shell: true,        // Required on Windows for npx to resolve
-  }
-);
+const serverProcess = spawn('npx', ['tsx', 'backend/api/server.ts'], {
+  cwd: ROOT,
+  stdio: 'inherit',
+  shell: true,
+  env: {
+    ...process.env,
+    // Fast /api/analyze + skip heavy vector embedding in dev; override a global NODE_ENV=production.
+    NODE_ENV: 'development',
+  },
+});
 
 serverProcess.on('error', (err) => {
   console.error('❌ [InterviewGuru] Failed to start server:', err.message);
@@ -36,46 +45,42 @@ serverProcess.on('close', (code) => {
   }
 });
 
-// ── 2. Poll TCP port 3000 until server is ready ───────────────────────────
-function isPortOpen(port, callback) {
-  const socket = new net.Socket();
-  socket.setTimeout(500);
-
-  socket.on('connect', () => { socket.destroy(); callback(true);  });
-  socket.on('error',   () => { socket.destroy(); callback(false); });
-  socket.on('timeout', () => { socket.destroy(); callback(false); });
-
-  socket.connect(port, '127.0.0.1');
-}
-
-function waitForServer(port, onReady) {
+function waitForBoundPort(onReady) {
   process.stdout.write('⏳ [InterviewGuru] Waiting for server');
-
   const timer = setInterval(() => {
-    isPortOpen(port, (ready) => {
-      if (ready) {
-        clearInterval(timer);
-        process.stdout.write(' ✅\n');
-        onReady();
-      } else {
-        process.stdout.write('.');
+    try {
+      if (fs.existsSync(DEV_PORT_FILE)) {
+        const raw = fs.readFileSync(DEV_PORT_FILE, 'utf8').trim();
+        const p = parseInt(raw, 10);
+        if (p >= 1 && p <= 65535) {
+          clearInterval(timer);
+          process.stdout.write(' ✅\n');
+          onReady(p);
+          return;
+        }
       }
-    });
-  }, 1000);
+    } catch {
+      /* keep polling */
+    }
+    process.stdout.write('.');
+  }, 250);
 }
 
-// ── 3. Launch Electron once server is ready ───────────────────────────────
-waitForServer(3000, () => {
-  console.log('\n⚡ [InterviewGuru] Launching Electron app...\n');
+waitForBoundPort((port) => {
+  console.log(`\n⚡ [InterviewGuru] Launching Electron (UI → http://127.0.0.1:${port}/app)...\n`);
 
-  // require('electron') returns the path to the actual Electron binary (.exe on Windows)
-  // This is the officially recommended way — avoids all .cmd / shell issues
   const electronPath = require('electron');
 
   const electronProcess = spawn(electronPath, ['.'], {
     cwd: ROOT,
     stdio: 'inherit',
     shell: false,
+    env: {
+      ...process.env,
+      INTERVIEWGURU_DEV_PORT: String(port),
+      // Vite HMR needs unsafe-eval; Electron logs a CSP warning that does not apply once packaged.
+      ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
+    },
   });
 
   electronProcess.on('error', (err) => {
@@ -84,7 +89,6 @@ waitForServer(3000, () => {
     process.exit(1);
   });
 
-  // When Electron window is closed → shut down server too
   electronProcess.on('close', (code) => {
     console.log('\n[InterviewGuru] Electron closed. Shutting down server...');
     serverProcess.kill('SIGTERM');
@@ -92,6 +96,11 @@ waitForServer(3000, () => {
   });
 });
 
-// ── 4. Graceful shutdown on Ctrl+C ───────────────────────────────────────
-process.on('SIGINT',  () => { serverProcess.kill(); process.exit(0); });
-process.on('SIGTERM', () => { serverProcess.kill(); process.exit(0); });
+process.on('SIGINT', () => {
+  serverProcess.kill();
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  serverProcess.kill();
+  process.exit(0);
+});

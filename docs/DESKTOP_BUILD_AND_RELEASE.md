@@ -1,20 +1,35 @@
 # Windows desktop (.exe) — build, GitHub Releases, website download
 
-The app is an **Electron** wrapper around the same UI + an **embedded Express** server (`desktop/main/main.cjs` loads `backend/api/server.cjs`). Packaged users run everything **locally** on `http://localhost:<port>/app` (not the Vercel URL).
+The app is an **Electron** wrapper around the same UI + an **embedded Express** server (`desktop/main/main.cjs` loads `backend/api/server.cjs`). Packaged users run everything **locally** on **`http://127.0.0.1:3000/app`** (port is fixed for Clerk; not the Vercel URL).
+
+### End-user experience (normal app flow)
+
+Users install the **NSIS Setup** build only — **no** `.env` file, no extra steps. At **your** build time, `npm run dist` copies **`backend/.env`** (production keys: Clerk, Neon, Groq/BYOK, etc.) into the installer as **`resources/.env`** (gitignored intermediate: `desktop/packaging/.env`). That file is **never committed**; only the built `.exe` / installer carries the values.
+
+Optional: `INTERVIEWGURU_PACKAGING_ENV=path/to/prod.env npm run dist` to use a different env file than `backend/.env`.
+
+**Clerk (one-time in dashboard):** add **`http://127.0.0.1:3000`** under allowed origins / redirect URLs for the desktop app.
+
+**Auth parity with web:** Production API **does not allow guest usage**. The UI build must include **`VITE_CLERK_PUBLISHABLE_KEY`** (same as web). Portable `.exe` also embeds the same `resources/.env` when built this way.
+
+**Option A (recommended for `pk_live`):** In `backend/.env` set **`INTERVIEWGURU_WEB_APP_URL=https://your-production-domain.com`** (no trailing slash). The packaged app then loads **`…/app`** from that URL instead of starting the embedded server, so Clerk sees your real HTTPS origin. **Deploy the website first** so that URL includes the latest frontend (preload IPC bridge). If `INTERVIEWGURU_WEB_APP_URL` is unset, the app falls back to the embedded `127.0.0.1` server (local / test keys).
 
 ---
 
 ## 1. Build on a Windows machine
 
 1. Install **Node.js LTS** and clone the repo.
-2. From the repo root:
+2. Put **production** values in **`backend/.env`** (or point `INTERVIEWGURU_PACKAGING_ENV` at another file). Without this, `npm run dist` stops with a clear error.
+3. From the repo root:
 
    ```bash
    npm install
    npm run dist
    ```
 
-3. Output is under **`release/`** (folder is gitignored). You should see something like:
+   This runs **`prepare-packaged-env`** (copies env → `desktop/packaging/.env`), then **`npm run build`**, then **electron-builder**.
+
+4. Output is under **`release/`** (folder is gitignored). You should see something like:
    - **`InterviewGuru-1.0.0-Windows-x64.exe`** — **portable** single file (good for “download and run” + GitHub).
    - **`InterviewGuru-1.0.0-Windows-x64.exe`** may also pair with an **NSIS installer** name pattern from electron-builder — check `release/` after the first build.
 

@@ -1,4 +1,5 @@
 import { createClerkClient } from '@clerk/backend';
+import { clerkSecretKeyForNode } from '../config/clerkKeys';
 import { getPool, isDBConnected } from './database';
 
 let clerkClient: ReturnType<typeof createClerkClient> | null = null;
@@ -16,7 +17,7 @@ function clerkUserCacheTtlMs(): number {
 }
 
 function getClerk(): ReturnType<typeof createClerkClient> | null {
-	const secret = process.env.CLERK_SECRET_KEY;
+	const secret = clerkSecretKeyForNode();
 	if (!secret) return null;
 	if (!clerkClient) {
 		clerkClient = createClerkClient({ secretKey: secret });
@@ -64,10 +65,24 @@ export interface SyncedUser {
 	plan: import('../../shared/constants/planLimits').PlanTier;
 }
 
+/** Parallel /api/usage + /api/analyze share one in-flight sync per user (same Clerk + DB work). */
+const inflightUserSync = new Map<string, Promise<SyncedUser>>();
+
 /**
  * Resolve Clerk user for Express `req.user` (Postgres when available, else minimal in-memory-safe identity).
  */
 export async function loadClerkUserForRequest(clerkUserId: string, signupIp: string): Promise<SyncedUser> {
+	const existing = inflightUserSync.get(clerkUserId);
+	if (existing) return existing;
+
+	const run = loadClerkUserForRequestOnce(clerkUserId, signupIp).finally(() => {
+		inflightUserSync.delete(clerkUserId);
+	});
+	inflightUserSync.set(clerkUserId, run);
+	return run;
+}
+
+async function loadClerkUserForRequestOnce(clerkUserId: string, signupIp: string): Promise<SyncedUser> {
 	const clerk = getClerk();
 	if (!clerk) {
 		throw new Error('Clerk not configured');

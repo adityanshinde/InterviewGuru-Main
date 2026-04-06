@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useMemo, useRef, type ReactNode } from 'react';
 import { useAuth } from '@clerk/clerk-react';
 
 export type AuthHeadersFn = () => Promise<Record<string, string>>;
@@ -28,11 +28,16 @@ export function ApiAuthProvider({ children, disabled }: { children: ReactNode; d
 
 function ClerkBackedHeaders({ children }: { children: ReactNode }) {
 	const { getToken, isSignedIn, isLoaded } = useAuth();
+	const getTokenRef = useRef(getToken);
+	getTokenRef.current = getToken;
 	const getAuthHeaders = useCallback(async () => {
 		if (!isLoaded || !isSignedIn) return {};
-		const t = await getToken();
+		let t = await getTokenRef.current();
+		if (!t) {
+			t = await getTokenRef.current({ skipCache: true });
+		}
 		return t ? { Authorization: `Bearer ${t}` } : {};
-	}, [getToken, isSignedIn, isLoaded]);
+	}, [isSignedIn, isLoaded]);
 
 	const value = useMemo<ApiAuthContextValue>(
 		() => ({

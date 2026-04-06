@@ -9,10 +9,13 @@ import { Documentation, ApiReference, Blog, FAQ, PrivacyPolicy, TermsOfService, 
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { SignedIn, SignedOut, SignIn, SignUp } from '@clerk/clerk-react';
 import AppSignInGate from '@frontend/components/AppSignInGate';
+import AppAuthConfigMissing from '@frontend/components/AppAuthConfigMissing';
 
 import { useEffect } from 'react';
+import { getElectronIpc } from '@frontend/utils/electronIpc';
+import { hasAnyClerkPublishableKey } from '@frontend/utils/clerkPublishableKey';
 
-const clerkEnabled = !!import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+const clerkEnabled = hasAnyClerkPublishableKey();
 
 export default function App() {
   useEffect(() => {
@@ -20,11 +23,8 @@ export default function App() {
     const isElectronEnv = typeof navigator !== 'undefined' && /electron/i.test(navigator.userAgent);
     if (isElectronEnv) {
       try {
-        const win = window as any;
-        const ipc = win.electron?.ipcRenderer || (win.require ? win.require('electron').ipcRenderer : null);
-        if (ipc) {
-          ipc.send('resize-window', 1400, 900);
-        }
+        const ipc = getElectronIpc();
+        ipc?.send('resize-window', 953, 744);
       } catch (e) {
         console.log('Not running in Electron, or ipc blocked.');
       }
@@ -68,7 +68,7 @@ export default function App() {
                 </SignedOut>
               </>
             ) : (
-              <OverlayWidget />
+              <AppAuthConfigMissing />
             )
           }
         />

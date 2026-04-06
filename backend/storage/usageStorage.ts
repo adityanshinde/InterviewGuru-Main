@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { PLAN_LIMITS, PlanTier } from '../../shared/constants/planLimits';
 import { SessionRecord, UserRecord } from '../../shared/types';
 import { getPool, isDBConnected } from '../services/database';
@@ -6,6 +9,95 @@ type SessionStoreRecord = SessionRecord & { userId: string };
 
 const users = new Map<string, UserRecord>();
 const sessions = new Map<string, SessionStoreRecord>();
+
+let memoryDiskLoaded = false;
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let exitFlushRegistered = false;
+
+function flushPersistMemorySync(): void {
+	if (isDBConnected() || !memoryStorePath()) return;
+	if (persistTimer) {
+		clearTimeout(persistTimer);
+		persistTimer = null;
+	}
+	persistMemoryStore();
+}
+
+function registerExitFlushOnce(): void {
+	if (exitFlushRegistered) return;
+	exitFlushRegistered = true;
+	process.on('exit', flushPersistMemorySync);
+	process.on('SIGINT', flushPersistMemorySync);
+	process.on('SIGTERM', flushPersistMemorySync);
+}
+
+/** When Postgres is off, persist Maps here so closing the .exe does not reset quotas. Electron sets via INTERVIEWGURU_USAGE_STORE. */
+function memoryStorePath(): string | null {
+	const envPath = process.env.INTERVIEWGURU_USAGE_STORE?.trim();
+	if (envPath) return envPath;
+	if (process.env.NODE_ENV === 'production') {
+		const base =
+			process.platform === 'win32'
+				? path.join(process.env.APPDATA || os.homedir(), 'InterviewGuru')
+				: path.join(os.homedir(), '.interviewguru');
+		return path.join(base, 'usage-store.json');
+	}
+	return null;
+}
+
+function loadMemoryStoreOnce(): void {
+	if (memoryDiskLoaded || isDBConnected()) return;
+	memoryDiskLoaded = true;
+	const p = memoryStorePath();
+	if (!p) return;
+	try {
+		if (!fs.existsSync(p)) return;
+		const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as {
+			users?: Record<string, UserRecord>;
+			sessions?: Record<string, SessionStoreRecord>;
+		};
+		if (raw.users && typeof raw.users === 'object') {
+			for (const [k, v] of Object.entries(raw.users)) {
+				if (v && typeof v.userId === 'string') users.set(k, v);
+			}
+		}
+		if (raw.sessions && typeof raw.sessions === 'object') {
+			for (const [k, v] of Object.entries(raw.sessions)) {
+				if (v && typeof v.sessionId === 'string' && typeof v.userId === 'string') sessions.set(k, v);
+			}
+		}
+	} catch (e) {
+		console.warn('[usageStorage] Could not load usage-store.json (starting fresh):', e);
+	}
+}
+
+function persistMemoryStore(): void {
+	if (isDBConnected()) return;
+	const p = memoryStorePath();
+	if (!p) return;
+	try {
+		const dir = path.dirname(p);
+		if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+		const data = {
+			version: 1 as const,
+			users: Object.fromEntries(users),
+			sessions: Object.fromEntries(sessions),
+		};
+		fs.writeFileSync(p, JSON.stringify(data), 'utf8');
+	} catch (e) {
+		console.error('[usageStorage] Failed to persist usage store:', e);
+	}
+}
+
+function schedulePersistMemoryStore(): void {
+	if (isDBConnected()) return;
+	if (memoryStorePath()) registerExitFlushOnce();
+	if (persistTimer) clearTimeout(persistTimer);
+	persistTimer = setTimeout(() => {
+		persistTimer = null;
+		persistMemoryStore();
+	}, 300);
+}
 
 function getCurrentMonth(): string {
 	return new Date().toISOString().slice(0, 7);
@@ -32,12 +124,15 @@ function createDefaultUser(userId: string, email = ''): UserRecord {
 }
 
 function memoryGetOrCreateUser(userId: string, email = ''): UserRecord {
+	loadMemoryStoreOnce();
 	let user = users.get(userId);
 	if (!user) {
 		user = createDefaultUser(userId, email);
 		users.set(userId, user);
+		schedulePersistMemoryStore();
 	} else if (email && user.email !== email) {
 		user.email = email;
+		schedulePersistMemoryStore();
 	}
 	return user;
 }
@@ -126,8 +221,10 @@ export async function getUserFromDB(userId: string): Promise<UserRecord | null> 
 
 export async function createUserInDB(userId: string, email: string): Promise<UserRecord> {
 	if (!isDBConnected()) {
+		loadMemoryStoreOnce();
 		const u = createDefaultUser(userId, email);
 		users.set(userId, u);
+		schedulePersistMemoryStore();
 		return u;
 	}
 	const existing = await pgLoadUser(userId);
@@ -156,6 +253,7 @@ export function resetMonthlyUsageIfNeeded(user: UserRecord): boolean {
 		user.voiceMinutesUsed = 0;
 		user.chatMessagesUsed = 0;
 		user.sessionsUsed = 0;
+		schedulePersistMemoryStore();
 		return true;
 	}
 	return false;
@@ -168,6 +266,7 @@ export async function recordVoiceUsage(userId: string, voiceMinutes: number = 1)
 		user.voiceMinutesUsed += voiceMinutes;
 		user.lastActiveAt = Date.now();
 		users.set(userId, user);
+		schedulePersistMemoryStore();
 		return;
 	}
 	const pool = getPool()!;
@@ -185,6 +284,7 @@ export async function recordChatUsage(userId: string, chatCount: number = 1): Pr
 		user.chatMessagesUsed += chatCount;
 		user.lastActiveAt = Date.now();
 		users.set(userId, user);
+		schedulePersistMemoryStore();
 		return;
 	}
 	const pool = getPool()!;
@@ -220,6 +320,7 @@ export async function upgradeUserPlan(userId: string, newPlan: PlanTier): Promis
 		user.subscriptionStatus = newPlan === 'free' ? 'trial' : 'active';
 		user.lastActiveAt = Date.now();
 		users.set(userId, user);
+		schedulePersistMemoryStore();
 		return user;
 	}
 	const pool = getPool()!;
@@ -263,6 +364,7 @@ export async function createSession(userId: string): Promise<string | null> {
 		user.activeSessions = [sessionId, ...(user.activeSessions || [])].slice(0, 20);
 		user.lastActiveAt = now;
 		users.set(userId, user);
+		schedulePersistMemoryStore();
 		return sessionId;
 	}
 
@@ -282,11 +384,13 @@ export async function createSession(userId: string): Promise<string | null> {
 
 export async function updateSession(sessionId: string, userId: string, questionsAsked: number, voiceMinutesUsed: number = 0): Promise<void> {
 	if (!isDBConnected()) {
+		loadMemoryStoreOnce();
 		const session = sessions.get(sessionId);
 		if (!session || session.userId !== userId) return;
 		session.questionsAsked = questionsAsked;
 		session.voiceMinutesUsed = voiceMinutesUsed;
 		sessions.set(sessionId, session);
+		schedulePersistMemoryStore();
 		return;
 	}
 	const pool = getPool()!;
@@ -299,11 +403,13 @@ export async function updateSession(sessionId: string, userId: string, questions
 
 export async function closeSession(sessionId: string, userId: string, status: 'completed' | 'abandoned'): Promise<void> {
 	if (!isDBConnected()) {
+		loadMemoryStoreOnce();
 		const session = sessions.get(sessionId);
 		if (!session || session.userId !== userId) return;
 		session.status = status;
 		session.endTime = Date.now();
 		sessions.set(sessionId, session);
+		schedulePersistMemoryStore();
 		return;
 	}
 	const pool = getPool()!;
@@ -320,6 +426,7 @@ export async function getActiveSessions(): Promise<Record<string, unknown>[]> {
 
 export async function getActiveSessionsForUser(userId: string): Promise<Record<string, unknown>[]> {
 	if (!isDBConnected()) {
+		loadMemoryStoreOnce();
 		return Array.from(sessions.values())
 			.filter((s) => s.status === 'active' && s.userId === userId)
 			.map((s) => toPublicSession(s, users.get(s.userId)?.email || ''));
@@ -346,6 +453,7 @@ export async function getActiveSessionsForUser(userId: string): Promise<Record<s
 
 export async function getUserSessionHistory(userId: string): Promise<Record<string, unknown>[]> {
 	if (!isDBConnected()) {
+		loadMemoryStoreOnce();
 		return Array.from(sessions.values())
 			.filter((session) => session.userId === userId)
 			.sort((a, b) => b.startTime - a.startTime)

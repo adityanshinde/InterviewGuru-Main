@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from 'react';
 import { API_ENDPOINT } from '../../shared/utils/config';
 import { optionalGroqApiKeyHeaders } from '../utils/optionalGroqApiKeyHeaders';
 import { useApiAuthHeaders } from '../providers/ApiAuthContext';
+import { getElectronIpc } from '../utils/electronIpc';
 
 function clampChunkMs(raw: number): number {
 	if (!Number.isFinite(raw)) return 5000;
@@ -55,10 +56,10 @@ export function useTabAudioCapture(onTranscriptUpdate: (text: string) => void, o
 			let stream: MediaStream;
 
 			if (isElectron) {
-				const ipcRenderer = (window as any).require ? (window as any).require('electron').ipcRenderer : null;
-				if (!ipcRenderer) throw new Error("Electron IPC not available.");
+				const ipcRenderer = getElectronIpc();
+				if (!ipcRenderer) throw new Error('Electron IPC not available.');
 
-				const sourceId = await ipcRenderer.invoke('get-source-id');
+				const sourceId = await ipcRenderer.invoke('get-source-id') as string | null;
 				if (!sourceId) throw new Error("Failed to detect primary monitor.");
 
 				stream = await navigator.mediaDevices.getUserMedia({

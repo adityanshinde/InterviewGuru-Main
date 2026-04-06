@@ -72,6 +72,43 @@ html, body, #root {
 
 .ig-root > * { position: relative; z-index: 1; }
 
+/* Electron: window is transparent — lighten chrome so the desktop shows through */
+html.ig-electron .ig-root::before {
+  opacity: var(--ig-grid-opacity, 0.32);
+}
+
+html.ig-electron .ig-topbar {
+  background: rgba(2,6,23,0.5);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 1px 10px rgba(0,0,0,0.22);
+}
+
+/* Frameless + native traffic lights (macOS) */
+html.ig-electron .ig-topbar-mac {
+  padding-left: 78px;
+}
+
+html.ig-electron .transcript-panel {
+  background: rgba(0,0,0,0.12);
+}
+
+html.ig-electron .voice-main {
+  background: linear-gradient(180deg, transparent 0%, rgba(0,10,20,0.12) 100%);
+}
+
+html.ig-electron .chat-tab {
+  background: rgba(2,6,23,0.22);
+}
+
+html.ig-electron .chat-input-wrap {
+  background: rgba(0,0,0,0.08);
+}
+
+html.ig-electron .overlay-panel {
+  background: rgba(2,6,23,0.82);
+  backdrop-filter: blur(22px);
+}
+
 /* ── Toast ────────────────────────────────────────────────── */
 .toast-wrap {
   position: absolute;
@@ -909,13 +946,44 @@ kbd {
   color: var(--c-muted); font-size: 0.82rem;
 }
 
-.resize-handle {
-  position: absolute; bottom: 0; right: 0;
-  padding: 10px; cursor: nwse-resize; z-index: 99;
-  color: rgba(255,255,255,0.15); transition: color 0.2s;
+/* Frameless Electron: edges + corner above full-bleed content */
+.win-resize-edge {
+  position: absolute;
+  z-index: 10050;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
+}
+.win-resize-edge-right {
+  top: 48px;
+  right: 0;
+  bottom: 32px;
+  width: 10px;
+  cursor: ew-resize;
+}
+.win-resize-edge-bottom {
+  left: 0;
+  right: 32px;
+  bottom: 0;
+  height: 10px;
+  cursor: ns-resize;
 }
 
-.resize-handle:hover { color: var(--c-primary); }
+.resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  padding: 10px;
+  cursor: nwse-resize;
+  z-index: 10060;
+  color: rgba(255, 255, 255, 0.2);
+  transition: color 0.2s;
+  -webkit-app-region: no-drag;
+  pointer-events: auto;
+}
+
+.resize-handle:hover {
+  color: var(--c-primary);
+}
 
 /* ════════════════════════════════════════════════════════════
    PRECISION REFINEMENTS — Round 2

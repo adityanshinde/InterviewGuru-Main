@@ -1,7 +1,7 @@
 {
   "name": "interviewguru",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "main": "desktop/main/main.cjs",
   "scripts": {
@@ -17,9 +17,10 @@
     "db:migrate:down": "node scripts/run-db-migrate.mjs down",
     "db:migrate:create": "node scripts/run-db-migrate.mjs create -j js",
     "electron:dev": "node desktop/main/dev-launcher.cjs",
-    "predist": "taskkill /F /IM InterviewGuru.exe 2>nul || exit 0",
-    "dist": "npm run build && electron-builder",
-    "dist:publish": "npm run build && electron-builder --publish always"
+    "prepare-packaged-env": "node scripts/prepare-packaged-env.mjs",
+    "predist": "node scripts/prepare-packaged-env.mjs && node scripts/predist-win-kill.mjs",
+    "dist": "npm run predist && npm run build && electron-builder",
+    "dist:publish": "npm run predist && npm run build && electron-builder --publish always"
   },
   "build": {
     "appId": "com.interviewguru.app",
@@ -64,8 +65,16 @@
       "build/**/*",
       "backend/**/*",
       "desktop/**/*",
+      "!desktop/packaging/**",
       "assets/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "desktop/packaging",
+        "to": ".",
+        "filter": [".env"]
+      }
     ],
     "extraMetadata": {
       "main": "desktop/main/main.cjs"

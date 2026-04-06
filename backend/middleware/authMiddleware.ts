@@ -2,6 +2,7 @@ import { Request, Response, NextFunction, RequestHandler } from 'express';
 import crypto from 'node:crypto';
 import { clerkMiddleware, getAuth } from '@clerk/express';
 import { AuthRequest } from '../../shared/types';
+import { clerkPublishableKeyForNode, clerkSecretKeyForNode } from '../config/clerkKeys';
 import { loadClerkUserForRequest } from '../services/clerkUserSync';
 import {
 	getUserFromDB,
@@ -37,23 +38,55 @@ function clientIp(req: Request): string {
 	);
 }
 
-const clerkSecret = () => process.env.CLERK_SECRET_KEY?.trim();
-/** Same `pk_...` as the browser; Clerk Express requires it at runtime (not only `VITE_*` on Vercel). */
-const clerkPublishable = () =>
-	(process.env.CLERK_PUBLISHABLE_KEY || process.env.VITE_CLERK_PUBLISHABLE_KEY)?.trim();
+function warnClerkDevLiveMismatch(pk: string, sk: string) {
+	if (process.env.NODE_ENV === 'production') return;
+	if (pk.startsWith('pk_test_') && sk.startsWith('sk_live_')) {
+		console.warn(
+			'[Clerk] Browser uses a dev key (pk_test_*) but CLERK_SECRET_KEY is sk_live_*. /api/* will return 401 until they match. Fix: set CLERK_SECRET_KEY_DEV=sk_test_* from the same Clerk dev app as VITE_CLERK_PUBLISHABLE_KEY_DEV, or use sk_test as CLERK_SECRET_KEY locally.'
+		);
+	}
+}
 
-const clerkEnabled = () => !!clerkSecret();
+const clerkEnabled = () => !!clerkSecretKeyForNode();
+
+function isProductionNodeEnv(): boolean {
+	return process.env.NODE_ENV === 'production';
+}
 
 /**
- * Clerk session middleware — no-op if `CLERK_SECRET_KEY` is unset (local guest mode).
- * Passes publishable key explicitly so `CLERK_PUBLISHABLE_KEY` or `VITE_CLERK_PUBLISHABLE_KEY` both work on the server.
+ * Clerk session middleware — no-op if no secret key is resolved (local guest mode).
+ * Passes publishable + secret explicitly so dev/live key pairs stay aligned with the browser.
  */
-export const clerkAuthMiddleware: RequestHandler = clerkEnabled()
-	? clerkMiddleware({ publishableKey: clerkPublishable() || undefined })
-	: (_req, _res, next) => next();
+let clerkMwSingleton: RequestHandler | null = null;
+
+function resolveClerkExpressMiddleware(): RequestHandler {
+	if (clerkMwSingleton) return clerkMwSingleton;
+	if (!clerkEnabled()) {
+		clerkMwSingleton = (_req, _res, next) => next();
+		return clerkMwSingleton;
+	}
+	const pk = clerkPublishableKeyForNode();
+	const sk = clerkSecretKeyForNode();
+	warnClerkDevLiveMismatch(pk, sk);
+	if (!pk) {
+		console.error(
+			'[Clerk] Secret key is set but no publishable key found. Set CLERK_PUBLISHABLE_KEY or VITE_CLERK_PUBLISHABLE_KEY (and optionally VITE_CLERK_PUBLISHABLE_KEY_DEV) in backend/.env or frontend/.env — same values as the Vite app.'
+		);
+	}
+	clerkMwSingleton = clerkMiddleware({
+		publishableKey: pk || undefined,
+		secretKey: sk || undefined,
+	});
+	return clerkMwSingleton;
+}
+
+/** Lazy init so `loadEnvFirst` runs before Clerk reads process.env (see server.ts import order). */
+export const clerkAuthMiddleware: RequestHandler = (req, res, next) =>
+	resolveClerkExpressMiddleware()(req, res, next);
 
 /**
- * Resolves `req.user` from Clerk + DB, or guest identity when Clerk is disabled.
+ * Resolves `req.user` from Clerk + DB, or guest identity in non-production when Clerk is disabled (local dev only).
+ * Production (web Vercel + packaged desktop) must set CLERK_SECRET_KEY — no anonymous API usage.
  */
 export const authMiddleware: RequestHandler = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
 	try {
@@ -72,6 +105,14 @@ export const authMiddleware: RequestHandler = async (req: Request, res: Response
 				plan: synced.plan,
 			};
 			next();
+			return;
+		}
+
+		if (isProductionNodeEnv()) {
+			res.status(503).json({
+				error: 'Server missing CLERK_SECRET_KEY (or CLERK_SECRET_KEY_DEV in dev). Sign-in is required; configure Clerk on the API (same as web).',
+				code: 'auth_misconfigured',
+			});
 			return;
 		}
 
