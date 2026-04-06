@@ -12,6 +12,7 @@ This document records **symptoms**, **root causes**, and **fixes** applied for l
 4. [Slow `/api/analyze` and repeated `/api/usage`](#4-slow-apianalyze-and-repeated-apiusage)
 5. [Environment loading order (why `backend/.env` wins)](#5-environment-loading-order-why-backendenv-wins)
 6. [Quick reference: env vars](#6-quick-reference-env-vars)
+6a. [Vercel: `ENOENT` on `mkdir ~/.interviewguru`](#6a-vercel--serverless-enoent-on-mkdir-interviewguru)
 7. [Files changed (reference)](#7-files-changed-reference)
 8. [Desktop SEE-THROUGH slider does nothing (window stays opaque)](#8-desktop-see-through-slider-does-nothing-window-stays-opaque)
 
@@ -158,6 +159,26 @@ Implications:
 
 - **`CLERK_SECRET_KEY`** in **`backend/.env`** overrides a test secret loaded earlier from **`frontend/.env`**.
 - **`VITE_CLERK_PUBLISHABLE_KEY_DEV`** survives if **`backend/.env`** does **not** redefine it — that’s why dev publishable can still be correct while secret was wrong until **`CLERK_SECRET_KEY_DEV`** was added.
+
+---
+
+## 6a. Vercel / serverless: `ENOENT` on `mkdir ~/.interviewguru`
+
+### Symptoms
+
+- Logs: `[usageStorage] Failed to persist usage store: ENOENT ... mkdir '/home/sbx_user1051/.interviewguru'`
+
+### Cause
+
+If **`DATABASE_URL`** is missing or the DB never connects, the API falls back to **file-backed** usage storage. On Vercel, the serverless filesystem **cannot** create directories under the sandbox home like a desktop app.
+
+### Fix (code)
+
+**`usageStorage`**: when **`VERCEL`** or **`AWS_LAMBDA_FUNCTION_NAME`** is set, **`memoryStorePath()`** returns **`null`** (no disk persist; in-memory only per instance) unless **`INTERVIEWGURU_USAGE_STORE`** is set explicitly.
+
+### Fix (deployment)
+
+Set **`DATABASE_URL`** on the Vercel project to your **Neon** (or other Postgres) URL and run **`npm run db:migrate`** so **`ig_users`** exists. Then **`isDBConnected()`** is true and usage uses Postgres — no file path involved.
 
 ---
 

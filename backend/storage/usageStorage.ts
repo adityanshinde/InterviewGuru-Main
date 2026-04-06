@@ -31,10 +31,19 @@ function registerExitFlushOnce(): void {
 	process.on('SIGTERM', flushPersistMemorySync);
 }
 
-/** When Postgres is off, persist Maps here so closing the .exe does not reset quotas. Electron sets via INTERVIEWGURU_USAGE_STORE. */
+function isServerlessFilesystem(): boolean {
+	return !!(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+}
+
+/**
+ * When Postgres is off, persist Maps here (desktop .exe / long-lived Node).
+ * Vercel/Lambda: no writable home dir — return null so we stay in-memory only (set DATABASE_URL for real quotas).
+ * Override with INTERVIEWGURU_USAGE_STORE if you truly need a path (e.g. /tmp in a single-instance VM).
+ */
 function memoryStorePath(): string | null {
 	const envPath = process.env.INTERVIEWGURU_USAGE_STORE?.trim();
 	if (envPath) return envPath;
+	if (isServerlessFilesystem()) return null;
 	if (process.env.NODE_ENV === 'production') {
 		const base =
 			process.platform === 'win32'
