@@ -1,5 +1,5 @@
 import { createClerkClient } from '@clerk/backend';
-import { clerkSecretKeyForNode } from '../config/clerkKeys';
+import { clerkEnvironmentForNode, clerkSecretKeyForNode } from '../config/clerkKeys';
 import { getPool, isDBConnected } from './database';
 
 let clerkClient: ReturnType<typeof createClerkClient> | null = null;
@@ -102,12 +102,14 @@ async function loadClerkUserForRequestOnce(clerkUserId: string, signupIp: string
 	}
 
 	const pool = getPool()!;
+	const clerkEnv = clerkEnvironmentForNode();
 
 	const existing = await pool.query<{
 		clerk_user_id: string;
 		email: string;
 		plan: string;
-	}>(`SELECT clerk_user_id, email, plan FROM ig_users WHERE clerk_user_id = $1`, [clerkUserId]);
+		clerk_env: 'live' | 'test' | 'unknown' | null;
+	}>(`SELECT clerk_user_id, email, plan, clerk_env FROM ig_users WHERE clerk_user_id = $1`, [clerkUserId]);
 
 	if (existing.rows.length > 0) {
 		const row = existing.rows[0];
@@ -136,6 +138,12 @@ async function loadClerkUserForRequestOnce(clerkUserId: string, signupIp: string
 				email,
 			]);
 		}
+		if (clerkEnv !== 'unknown' && (row.clerk_env || 'unknown') !== clerkEnv) {
+			await pool.query(`UPDATE ig_users SET clerk_env = $2, updated_at = NOW() WHERE clerk_user_id = $1`, [
+				clerkUserId,
+				clerkEnv,
+			]);
+		}
 		return {
 			userId: row.clerk_user_id,
 			email: email || row.email,
@@ -152,10 +160,10 @@ async function loadClerkUserForRequestOnce(clerkUserId: string, signupIp: string
 	await pool.query(
 		`INSERT INTO ig_users (
         clerk_user_id, email, plan, subscription_status, trial_started_at,
-        billing_month, voice_minutes_used, chat_messages_used, sessions_used, signup_ip
-      ) VALUES ($1, $2, 'free', 'trial', NOW(), $3, 0, 0, 0, $4)
+        billing_month, voice_minutes_used, chat_messages_used, sessions_used, signup_ip, clerk_env
+      ) VALUES ($1, $2, 'free', 'trial', NOW(), $3, 0, 0, 0, $4, $5)
       ON CONFLICT (clerk_user_id) DO NOTHING`,
-		[clerkUserId, email, month, signupIp || null]
+		[clerkUserId, email, month, signupIp || null, clerkEnv]
 	);
 
 	const again = await pool.query<{ email: string; plan: string }>(
