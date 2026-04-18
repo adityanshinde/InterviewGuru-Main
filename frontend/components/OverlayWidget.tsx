@@ -3,7 +3,7 @@ import {
   Mic, MicOff, X, Sparkles, Activity, History, Download,
   EyeOff, Keyboard, MessageSquare, Send, AlertTriangle, CheckCircle,
   Trash2, Loader2, Copy, RefreshCw, ChevronRight, ArrowLeft,
-  Zap, Brain, ThumbsUp, ThumbsDown, User, Minimize2, Maximize2,
+  Zap, Brain, ThumbsUp, ThumbsDown, User, Minimize2, Maximize2, MoreHorizontal,
 } from 'lucide-react';
 import { useTabAudioCapture } from '../hooks/useTabAudioCapture';
 import { useAIAssistant } from '../hooks/useAIAssistant';
@@ -326,6 +326,9 @@ export default function OverlayWidget() {
   const [isHidden, setIsHidden] = useState(false);
   const [isTaskbarHidden, setIsTaskbarHidden] = useState(true);
   const [isAntiCaptureOn, setIsAntiCaptureOn] = useState(true);
+  const [isMiniMode, setIsMiniMode] = useState(false);
+  const [isReadableMode, setIsReadableMode] = useState(false);
+  const [showTopbarMenu, setShowTopbarMenu] = useState(false);
   const [opacity, setOpacity] = useState(90);
   const [persona, setPersona] = useState('Technical Interviewer');
   const [resume, setResume] = useState('');
@@ -340,6 +343,8 @@ export default function OverlayWidget() {
   const [voiceChunkMs, setVoiceChunkMs] = useState(5000);
   const [voiceSkipSilent, setVoiceSkipSilent] = useState(true);
   const [model, setModel] = useState('llama-3.3-70b-versatile');
+  const [answerStyle, setAnswerStyle] = useState<'short' | 'balanced' | 'detailed'>('balanced');
+  const [showApiKeyValue, setShowApiKeyValue] = useState(false);
   const [activeTab, setActiveTab] = useState<'voice' | 'chat'>('voice');
   const [chatInput, setChatInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -349,10 +354,12 @@ export default function OverlayWidget() {
   const [elapsedTime, setElapsedTime] = useState('00:00');
   const [copiedAlert, setCopiedAlert] = useState(false);
   const planStatus = usePlanStatus();
+  const usagePeriodLabel = planStatus.plan === 'free' ? 'lifetime' : 'month';
   const getAuthHeaders = useApiAuthHeaders();
-  const { sessionId, isSessionActive, startSession, updateSession, closeSession } = useSessionTracking();
+  const { sessionId, isSessionActive, sessionLimitMinutes, sessionError, startSession, updateSession, closeSession } = useSessionTracking();
   const chatInputRef = useRef<HTMLTextAreaElement>(null);
   const answersEndRef = useRef<HTMLDivElement>(null);
+  const topbarMenuRef = useRef<HTMLDivElement>(null);
   const lastProcessedQuestionRef = useRef<string | null>(null);
   const animatedIds = useRef<Set<string>>(new Set());
   const handleAnimationDone = useCallback((id: string) => {
@@ -531,10 +538,16 @@ export default function OverlayWidget() {
     if (Number.isFinite(chunk)) setVoiceChunkMs(Math.min(Math.max(chunk, 2000), 15000));
     if (load('voice_skip_silent') !== null) setVoiceSkipSilent(load('voice_skip_silent') === 'true');
     if (load('groq_model')) setModel(load('groq_model')!);
+    const storedAnswerStyle = load('groq_answer_style');
+    if (storedAnswerStyle === 'short' || storedAnswerStyle === 'balanced' || storedAnswerStyle === 'detailed') {
+      setAnswerStyle(storedAnswerStyle);
+    }
     if (load('groq_persona')) setPersona(load('groq_persona')!);
     if (load('groq_resume')) setResume(load('groq_resume')!);
     if (load('groq_jd')) setJd(load('groq_jd')!);
     if (load('aura_opacity')) setOpacity(parseInt(load('aura_opacity')!, 10));
+    if (load('aura_mini_mode') !== null) setIsMiniMode(load('aura_mini_mode') === 'true');
+    if (load('aura_readable_mode') !== null) setIsReadableMode(load('aura_readable_mode') === 'true');
     if (load('aura_hotkeys')) setHotkeys(JSON.parse(load('aura_hotkeys')!));
     if (load('aura_output_device')) setSelectedOutputDevice(load('aura_output_device')!);
     setEnableTTS(load('aura_enable_tts') === 'true');
@@ -546,6 +559,25 @@ export default function OverlayWidget() {
     if (savedAntiCapture !== null) { const v = savedAntiCapture === 'true'; setIsAntiCaptureOn(v); if (ipc) ipc.send('set-stealth-mode', v); }
     else if (ipc) ipc.send('set-stealth-mode', true);
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem('aura_mini_mode', isMiniMode.toString());
+  }, [isMiniMode]);
+
+  useEffect(() => {
+    localStorage.setItem('aura_readable_mode', isReadableMode.toString());
+  }, [isReadableMode]);
+
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => {
+      if (!showTopbarMenu) return;
+      if (topbarMenuRef.current && !topbarMenuRef.current.contains(e.target as Node)) {
+        setShowTopbarMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [showTopbarMenu]);
 
   useEffect(() => {
     return () => {
@@ -583,6 +615,7 @@ export default function OverlayWidget() {
     localStorage.setItem('voice_chunk_ms', String(Math.min(Math.max(voiceChunkMs, 2000), 15000)));
     localStorage.setItem('voice_skip_silent', voiceSkipSilent.toString());
     localStorage.setItem('groq_model', model);
+    localStorage.setItem('groq_answer_style', answerStyle);
     localStorage.setItem('groq_persona', persona);
     localStorage.setItem('groq_resume', resume);
     localStorage.setItem('groq_jd', jd);
@@ -590,10 +623,35 @@ export default function OverlayWidget() {
     localStorage.setItem('aura_hotkeys', JSON.stringify(hotkeys));
     localStorage.setItem('aura_output_device', selectedOutputDevice);
     localStorage.setItem('aura_enable_tts', enableTTS.toString());
+    localStorage.setItem('aura_mini_mode', isMiniMode.toString());
+    localStorage.setItem('aura_readable_mode', isReadableMode.toString());
     if (ipc) ipc.send('update-hotkeys', hotkeys);
     setShowSettings(false);
     showAlert('Settings saved!', 'success');
   };
+
+  const resetSettingsToDefaults = () => {
+    setVoiceModel('whisper-large-v3-turbo');
+    setVoiceChunkMs(5000);
+    setVoiceSkipSilent(true);
+    setModel('llama-3.3-70b-versatile');
+    setAnswerStyle('balanced');
+    setPersona('Technical Interviewer');
+    setResume('');
+    setJd('');
+    setEnableTTS(false);
+    setSelectedOutputDevice('');
+    setOpacity(90);
+    setIsReadableMode(false);
+    setIsMiniMode(false);
+    setShowApiKeyValue(false);
+    showAlert('Defaults loaded. Click Save Changes to apply.', 'info');
+  };
+
+  useEffect(() => {
+    if (!sessionError) return;
+    showAlert(sessionError, 'info');
+  }, [sessionError, showAlert]);
 
   const handleClear = () => { clearTranscript(); resetAssistant(); setHistory([]); };
 
@@ -704,7 +762,11 @@ export default function OverlayWidget() {
 
   return (
     <div
-      className="ig-root flex flex-col font-sans relative pointer-events-auto h-full w-full overflow-hidden"
+      className={cn(
+        "ig-root flex flex-col font-sans relative pointer-events-auto h-full w-full overflow-hidden",
+        isMiniMode && "ig-mini-mode",
+        isReadableMode && "ig-readable-mode"
+      )}
       style={igRootStyle}
     >
       {appAlert && (
@@ -782,17 +844,17 @@ export default function OverlayWidget() {
           {isListening && (
             <div className="session-timer">
               <span className="timer-dot" />
-              <span className="timer-text">{elapsedTime}</span>
+              <span className="timer-text">{elapsedTime}{sessionLimitMinutes ? ` / ${String(sessionLimitMinutes).padStart(2, '0')}:00` : ''}</span>
             </div>
           )}
-
-          <button
-            onClick={() => setShowHistory(!showHistory)}
-            className={cn('icon-btn', showHistory && 'active')}
-            title="Session History"
-          >
-            <History size={13} />
-          </button>
+          <div className="hidden items-center gap-1 rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] text-slate-300 md:flex" title={`Voice remaining (${usagePeriodLabel})`}>
+            <span>Voice</span>
+            <span className="font-mono text-cyan-300">{planStatus.quotas.voiceMinutes.remaining}m</span>
+          </div>
+          <div className="hidden items-center gap-1 rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] text-slate-300 md:flex" title={`Chat remaining (${usagePeriodLabel})`}>
+            <span>Chat</span>
+            <span className="font-mono text-cyan-300">{planStatus.quotas.chatMessages.remaining}</span>
+          </div>
 
           {clerkUiEnabled && (
             <div className="flex shrink-0 items-center" title="Account">
@@ -817,6 +879,43 @@ export default function OverlayWidget() {
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
           </button>
+          <div className="topbar-menu-wrap" ref={topbarMenuRef}>
+            <button
+              onClick={() => setShowTopbarMenu(v => !v)}
+              className={cn('icon-btn', showTopbarMenu && 'active')}
+              title="More actions"
+            >
+              <MoreHorizontal size={13} />
+            </button>
+            {showTopbarMenu && (
+              <div className="topbar-menu-popover">
+                <button
+                  type="button"
+                  className="topbar-menu-item"
+                  onClick={() => { setShowHistory(v => !v); setShowTopbarMenu(false); }}
+                >
+                  <History size={12} />
+                  <span>{showHistory ? 'Hide history' : 'Show history'}</span>
+                </button>
+                <button
+                  type="button"
+                  className="topbar-menu-item"
+                  onClick={() => { setIsMiniMode(v => !v); setShowTopbarMenu(false); }}
+                >
+                  <ChevronRight size={12} className={cn('transition-transform', isMiniMode && 'rotate-90')} />
+                  <span>{isMiniMode ? 'Exit mini mode' : 'Enter mini mode'}</span>
+                </button>
+                <button
+                  type="button"
+                  className="topbar-menu-item"
+                  onClick={() => { setIsReadableMode(v => !v); setShowTopbarMenu(false); }}
+                >
+                  <EyeOff size={12} />
+                  <span>{isReadableMode ? 'Disable readable mode' : 'Enable readable mode'}</span>
+                </button>
+              </div>
+            )}
+          </div>
 
           <button
             onClick={toggleListen}
@@ -831,7 +930,7 @@ export default function OverlayWidget() {
               <button
                 type="button"
                 onClick={() => ipc?.send('window-minimize')}
-                className="icon-btn"
+                className="icon-btn window-control-btn"
                 title="Minimize"
               >
                 <Minimize2 size={13} strokeWidth={2.25} />
@@ -839,7 +938,7 @@ export default function OverlayWidget() {
               <button
                 type="button"
                 onClick={() => ipc?.send('window-maximize-toggle')}
-                className="icon-btn"
+                className="icon-btn window-control-btn"
                 title="Maximize / restore"
               >
                 <Maximize2 size={13} strokeWidth={2.25} />
@@ -916,22 +1015,42 @@ export default function OverlayWidget() {
                 />
               </div>
 
-              <div className="grid gap-2 mb-4">
+              <div className="settings-kpi-row">
+                <div className="settings-kpi">
+                  <span className="settings-kpi-label">API Key</span>
+                  <span className={cn('settings-kpi-value', apiKey.trim() ? 'ok' : 'warn')}>
+                    {apiKey.trim() ? 'Configured' : 'Missing'}
+                  </span>
+                </div>
+                <div className="settings-kpi">
+                  <span className="settings-kpi-label">Plan</span>
+                  <span className="settings-kpi-value">{planStatus.plan}</span>
+                </div>
+                <div className="settings-kpi">
+                  <span className="settings-kpi-label">Mode</span>
+                  <span className="settings-kpi-value">{activeTab === 'voice' ? 'Voice' : 'Chat'}</span>
+                </div>
+              </div>
+
+              <div className="mb-4 grid grid-cols-1 gap-2 md:grid-cols-3">
                 <UsageBar
                   label="Voice Minutes"
                   used={planStatus.quotas.voiceMinutes.used}
                   limit={planStatus.quotas.voiceMinutes.limit}
                   unit="m"
+                  periodLabel={usagePeriodLabel}
                 />
                 <UsageBar
                   label="Chat Messages"
                   used={planStatus.quotas.chatMessages.used}
                   limit={planStatus.quotas.chatMessages.limit}
+                  periodLabel={usagePeriodLabel}
                 />
                 <UsageBar
                   label="Interview Sessions"
                   used={planStatus.quotas.sessions.used}
                   limit={planStatus.quotas.sessions.limit}
+                  periodLabel={usagePeriodLabel}
                 />
               </div>
 
@@ -939,7 +1058,17 @@ export default function OverlayWidget() {
 
               <div className="setting-group">
                 <label className="setting-label">Groq API Key</label>
-                <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="gsk_..." className="setting-input" />
+                <div className="key-input-row">
+                  <input type={showApiKeyValue ? 'text' : 'password'} value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="gsk_..." className="setting-input" />
+                  <button
+                    type="button"
+                    className="settings-inline-btn"
+                    onClick={() => setShowApiKeyValue(v => !v)}
+                  >
+                    {showApiKeyValue ? 'Hide' : 'Show'}
+                  </button>
+                </div>
+                <p className="settings-help-text">Stored locally on your machine. Never shared in UI logs.</p>
               </div>
 
               <div className="setting-group">
@@ -954,11 +1083,13 @@ export default function OverlayWidget() {
               <div className="setting-group">
                 <label className="setting-label">Your Resume (Context)</label>
                 <textarea value={resume} onChange={e => setResume(e.target.value)} placeholder="Paste your resume text here..." className="setting-input textarea-sm" />
+                <div className="settings-counter">{resume.length} chars</div>
               </div>
 
               <div className="setting-group">
                 <label className="setting-label">Job Description (JD)</label>
                 <textarea value={jd} onChange={e => setJd(e.target.value)} placeholder="Paste the job description..." className="setting-input textarea-sm" />
+                <div className="settings-counter">{jd.length} chars</div>
                 <div className="flex justify-end mt-1">
                   <button onClick={generateCache} disabled={isGenerating || !jd || jd.length < 50} className={cn('cache-btn', isGenerating && 'disabled')}>
                     {isGenerating
@@ -979,6 +1110,45 @@ export default function OverlayWidget() {
                   </p>
                 )}
                 <input type="range" min="10" max="100" value={opacity} onChange={e => setOpacity(parseInt(e.target.value))} className="range-input" />
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {[
+                    { label: 'Stealth', value: 35 },
+                    { label: 'Readable', value: 65 },
+                    { label: 'Focus', value: 90 },
+                  ].map(p => (
+                    <button
+                      key={p.label}
+                      type="button"
+                      onClick={() => setOpacity(p.value)}
+                      className={cn(
+                        'px-2 py-1 rounded-md text-[10px] border transition',
+                        opacity === p.value
+                          ? 'bg-cyan-500/20 border-cyan-400/50 text-cyan-200'
+                          : 'bg-white/[0.03] border-white/10 text-slate-300 hover:bg-white/[0.06]'
+                      )}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="setting-group">
+                <div className="flex justify-between items-center py-1">
+                  <div>
+                    <label className="setting-label">Readable mode</label>
+                    <p className="text-[10px] text-white/40 mt-0.5 leading-snug">
+                      Higher contrast and cleaner readability during live interviews.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsReadableMode(v => !v)}
+                    className={cn('toggle-switch', isReadableMode && 'on')}
+                  >
+                    <div className="toggle-thumb" />
+                  </button>
+                </div>
               </div>
 
               <div className="stealth-group">
@@ -999,6 +1169,15 @@ export default function OverlayWidget() {
                   <option value="llama-3.3-70b-versatile">Llama 3.3 70B (Recommended)</option>
                   <option value="llama-3.1-8b-instant">Llama 3.1 8B (Super Fast)</option>
                   <option value="deepseek-r1-distill-llama-70b">DeepSeek R1 Distill 70B</option>
+                </select>
+              </div>
+
+              <div className="setting-group">
+                <label className="setting-label">Answer Density</label>
+                <select value={answerStyle} onChange={e => setAnswerStyle(e.target.value as 'short' | 'balanced' | 'detailed')} className="setting-input">
+                  <option value="short">Short (quick interview responses)</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="detailed">Detailed (deeper explanations)</option>
                 </select>
               </div>
 
@@ -1061,7 +1240,10 @@ export default function OverlayWidget() {
                 )}
               </div>
 
-              <button onClick={saveSettings} className="save-btn">Save Changes</button>
+              <div className="settings-action-row">
+                <button onClick={resetSettingsToDefaults} className="settings-reset-btn">Reset Defaults</button>
+                <button onClick={saveSettings} className="save-btn">Save Changes</button>
+              </div>
 
               {isGenerating && (
                 <div className="cache-overlay">

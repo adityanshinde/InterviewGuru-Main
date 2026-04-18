@@ -34,6 +34,18 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 	const audioRef = useRef<HTMLAudioElement | null>(null);
 	const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+	const answerStyleHeader = useCallback((): Record<string, string> => {
+		try {
+			const style = (localStorage.getItem('groq_answer_style') || 'balanced').trim().toLowerCase();
+			if (style === 'short' || style === 'balanced' || style === 'detailed') {
+				return { 'x-answer-style': style };
+			}
+		} catch {
+			// ignore localStorage access issues
+		}
+		return { 'x-answer-style': 'balanced' };
+	}, []);
+
 	useEffect(() => {
 		audioRef.current = new Audio();
 
@@ -157,6 +169,7 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 						'x-model': model,
 						'x-persona': persona,
 						Accept: 'application/json',
+						...answerStyleHeader(),
 						...optionalGroqApiKeyHeaders(),
 						...auth,
 					},
@@ -223,7 +236,7 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 			}
 		}
 		}, 800); // Wait 800ms between transcript updates before processing
-	}, [isProcessing, isSpeaking, playSpeech, onQuestionDetected, getAuthHeaders, onError]);
+	}, [isProcessing, isSpeaking, playSpeech, onQuestionDetected, getAuthHeaders, onError, answerStyleHeader]);
 
 	const askQuestion = useCallback(async (questionText: string) => {
 		if (!questionText.trim() || isProcessing) return;
@@ -245,6 +258,7 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 					'x-persona': persona,
 					'x-mode': 'chat',
 					Accept: 'text/event-stream',
+						...answerStyleHeader(),
 					...optionalGroqApiKeyHeaders(),
 					...auth,
 				},
@@ -274,6 +288,7 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 						'x-persona': persona,
 						'x-mode': 'chat',
 						Accept: 'application/json',
+						...answerStyleHeader(),
 						...optionalGroqApiKeyHeaders(),
 						...auth,
 					},
@@ -369,7 +384,7 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 			setIsProcessing(false);
 			if (onError) onError(error.message || 'Chat prompt failed. Check API key format.');
 		}
-	}, [isProcessing, playSpeech, getAuthHeaders, onError]);
+	}, [isProcessing, playSpeech, getAuthHeaders, onError, answerStyleHeader]);
 
 	const resetAssistant = useCallback(() => {
 		setDetectedQuestion(null);

@@ -14,6 +14,8 @@ export interface SessionQuestion {
 export function useSessionTracking() {
 	const [sessionId, setSessionId] = useState<string | null>(null);
 	const [isSessionActive, setIsSessionActive] = useState(false);
+	const [sessionLimitMinutes, setSessionLimitMinutes] = useState<number | null>(null);
+	const [sessionError, setSessionError] = useState<string | null>(null);
 	const questionsBuffer = useRef<SessionQuestion[]>([]);
 	const getAuthHeaders = useApiAuthHeaders();
 
@@ -43,11 +45,15 @@ export function useSessionTracking() {
 					return null;
 				}
 
-				const data = (await res.json()) as { sessionId?: string };
+				const data = (await res.json()) as { sessionId?: string; durationLimitMinutes?: number };
 				const sid = data.sessionId || null;
 				if (sid) {
 					setSessionId(sid);
 					setIsSessionActive(true);
+					setSessionLimitMinutes(
+						typeof data.durationLimitMinutes === 'number' ? data.durationLimitMinutes : null
+					);
+					setSessionError(null);
 					questionsBuffer.current = [];
 					console.log(`[Session] Started: ${sid}`);
 				}
@@ -69,7 +75,7 @@ export function useSessionTracking() {
 			questionsBuffer.current.push(question);
 			const auth = await getAuthHeaders();
 			try {
-				await fetch(API_ENDPOINT(`/api/sessions/${encodeURIComponent(sessionId)}`), {
+				const res = await fetch(API_ENDPOINT(`/api/sessions/${encodeURIComponent(sessionId)}`), {
 					method: 'PUT',
 					headers: {
 						'Content-Type': 'application/json',
@@ -81,6 +87,17 @@ export function useSessionTracking() {
 						voiceMinutesUsed: 0,
 					}),
 				});
+				if (res.status === 402) {
+					const data = await res.json().catch(() => ({}));
+					const msg =
+						(data as { error?: string }).error || 'Session reached the duration limit. Start a new session.';
+					console.warn('[Session] Duration limit reached:', msg);
+					setSessionId(null);
+					setIsSessionActive(false);
+					setSessionLimitMinutes(null);
+					setSessionError(msg);
+					questionsBuffer.current = [];
+				}
 			} catch (e) {
 				console.warn('[Session] Update failed (offline?):', e);
 			}
@@ -112,12 +129,16 @@ export function useSessionTracking() {
 		console.log(`[Session] Closed ${sid} with ${questionsBuffer.current.length} questions`);
 		setSessionId(null);
 		setIsSessionActive(false);
+		setSessionLimitMinutes(null);
+		setSessionError(null);
 		questionsBuffer.current = [];
 	}, [sessionId, getAuthHeaders]);
 
 	return {
 		sessionId,
 		isSessionActive,
+		sessionLimitMinutes,
+		sessionError,
 		startSession,
 		updateSession,
 		closeSession,

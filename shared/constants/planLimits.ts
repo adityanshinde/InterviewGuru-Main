@@ -5,7 +5,6 @@ export interface PlanConfig {
   price: number | null;
   currency: string;
   billingPeriod: 'one-time' | 'month' | 'year';
-  trialDays?: number;
   voiceMinutesPerMonth: number;
   chatMessagesPerMonth: number;
   sessionsPerMonth: number;
@@ -15,14 +14,14 @@ export interface PlanConfig {
 
 export const PLAN_LIMITS: Record<PlanTier, PlanConfig> = {
   free: {
-    name: 'Free Trial',
+    name: 'Free (BYOK)',
     price: 0,
     currency: 'USD',
     billingPeriod: 'one-time',
-    trialDays: 7,
-    voiceMinutesPerMonth: 20,
-    chatMessagesPerMonth: 20,
-    sessionsPerMonth: 1,
+    // One-time lifetime quota (enforced server-side in effectiveQuotaLimits()).
+    voiceMinutesPerMonth: 15,
+    chatMessagesPerMonth: 10,
+    sessionsPerMonth: 99999,
     features: {
       textToSpeech: false,
       sessionExport: false,
@@ -30,7 +29,7 @@ export const PLAN_LIMITS: Record<PlanTier, PlanConfig> = {
       cacheGeneration: false,
       advancedAnalytics: false,
     },
-    notes: '7-day free trial, then upgrade required',
+    notes: 'Bring your own Groq key. One-time free quota; upgrade for higher recurring limits.',
   },
 
   basic: {

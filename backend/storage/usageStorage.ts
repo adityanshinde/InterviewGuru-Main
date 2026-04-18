@@ -112,6 +112,30 @@ function getCurrentMonth(): string {
 	return new Date().toISOString().slice(0, 7);
 }
 
+function usagePeriodForPlan(plan: PlanTier): string {
+	return plan === 'free' ? 'lifetime' : getCurrentMonth();
+}
+
+export function effectiveQuotaLimits(plan: PlanTier): {
+	voiceLimit: number;
+	chatLimit: number;
+	sessionsLimit: number;
+} {
+	const config = PLAN_LIMITS[plan];
+	if (plan === 'free') {
+		return {
+			voiceLimit: 15,
+			chatLimit: 10,
+			sessionsLimit: config.sessionsPerMonth,
+		};
+	}
+	return {
+		voiceLimit: config.voiceMinutesPerMonth,
+		chatLimit: config.chatMessagesPerMonth,
+		sessionsLimit: config.sessionsPerMonth,
+	};
+}
+
 function createDefaultUser(userId: string, email = ''): UserRecord {
 	const now = Date.now();
 	return {
@@ -120,8 +144,8 @@ function createDefaultUser(userId: string, email = ''): UserRecord {
 		plan: 'free',
 		trialsUsed: false,
 		trialStartDate: now,
-		subscriptionStatus: 'trial',
-		currentMonth: getCurrentMonth(),
+		subscriptionStatus: 'active',
+		currentMonth: usagePeriodForPlan('free'),
 		voiceMinutesUsed: 0,
 		chatMessagesUsed: 0,
 		sessionsUsed: 0,
@@ -193,7 +217,14 @@ function pgRowToUser(r: {
 async function pgEnsureBillingMonth(userId: string): Promise<void> {
 	const pool = getPool();
 	if (!pool) return;
-	const month = getCurrentMonth();
+	const row = await pool.query<{ plan: PlanTier; billing_month: string }>(
+		`SELECT plan, billing_month FROM ig_users WHERE clerk_user_id = $1`,
+		[userId]
+	);
+	const first = row.rows[0];
+	if (!first) return;
+	const month = usagePeriodForPlan(first.plan || 'free');
+	if (first.billing_month === month) return;
 	await pool.query(
 		`UPDATE ig_users SET
       voice_minutes_used = 0,
@@ -239,12 +270,12 @@ export async function createUserInDB(userId: string, email: string): Promise<Use
 	const existing = await pgLoadUser(userId);
 	if (existing) return existing;
 	const pool = getPool()!;
-	const month = getCurrentMonth();
+	const month = usagePeriodForPlan('free');
 	await pool.query(
 		`INSERT INTO ig_users (
         clerk_user_id, email, plan, subscription_status, trial_started_at,
         billing_month, voice_minutes_used, chat_messages_used, sessions_used
-      ) VALUES ($1, $2, 'free', 'trial', NOW(), $3, 0, 0, 0)
+      ) VALUES ($1, $2, 'free', 'active', NOW(), $3, 0, 0, 0)
       ON CONFLICT (clerk_user_id) DO NOTHING`,
 		[userId, email, month]
 	);
@@ -256,7 +287,7 @@ export function resetMonthlyUsageIfNeeded(user: UserRecord): boolean {
 	if (isDBConnected()) {
 		return false;
 	}
-	const currentMonth = getCurrentMonth();
+	const currentMonth = usagePeriodForPlan(user.plan);
 	if (user.currentMonth !== currentMonth) {
 		user.currentMonth = currentMonth;
 		user.voiceMinutesUsed = 0;
@@ -308,15 +339,15 @@ export async function getRemainingQuota(userId: string, quotaType: 'voice' | 'ch
 	const user = await getUserFromDB(userId);
 	if (!user) return 0;
 	resetMonthlyUsageIfNeeded(user);
-	const planConfig = PLAN_LIMITS[user.plan];
+	const limits = effectiveQuotaLimits(user.plan);
 
 	switch (quotaType) {
 		case 'voice':
-			return Math.max(0, planConfig.voiceMinutesPerMonth - user.voiceMinutesUsed);
+			return Math.max(0, limits.voiceLimit - user.voiceMinutesUsed);
 		case 'chat':
-			return Math.max(0, planConfig.chatMessagesPerMonth - user.chatMessagesUsed);
+			return Math.max(0, limits.chatLimit - user.chatMessagesUsed);
 		case 'session':
-			return Math.max(0, planConfig.sessionsPerMonth - user.sessionsUsed);
+			return Math.max(0, limits.sessionsLimit - user.sessionsUsed);
 		default:
 			return 0;
 	}
@@ -326,7 +357,7 @@ export async function upgradeUserPlan(userId: string, newPlan: PlanTier): Promis
 	if (!isDBConnected()) {
 		const user = memoryGetOrCreateUser(userId);
 		user.plan = newPlan;
-		user.subscriptionStatus = newPlan === 'free' ? 'trial' : 'active';
+		user.subscriptionStatus = 'active';
 		user.lastActiveAt = Date.now();
 		users.set(userId, user);
 		schedulePersistMemoryStore();
@@ -335,7 +366,7 @@ export async function upgradeUserPlan(userId: string, newPlan: PlanTier): Promis
 	const pool = getPool()!;
 	await pool.query(
 		`UPDATE ig_users SET plan = $2,
-      subscription_status = CASE WHEN $2::text = 'free' THEN 'trial' ELSE 'active' END,
+      subscription_status = 'active',
       updated_at = NOW()
      WHERE clerk_user_id = $1`,
 		[userId, newPlan]
@@ -344,14 +375,13 @@ export async function upgradeUserPlan(userId: string, newPlan: PlanTier): Promis
 }
 
 export function calculateTrialDaysRemaining(user: UserRecord): number {
-	const trialDays = PLAN_LIMITS.free.trialDays || 7;
-	const start = user.trialStartDate || user.createdAt;
-	const elapsedDays = Math.floor((Date.now() - start) / (24 * 60 * 60 * 1000));
-	return Math.max(0, trialDays - elapsedDays);
+	void user;
+	return 0;
 }
 
 export function checkTrialExpired(user: UserRecord): boolean {
-	return calculateTrialDaysRemaining(user) <= 0;
+	void user;
+	return false;
 }
 
 export async function createSession(userId: string): Promise<string | null> {
@@ -426,6 +456,57 @@ export async function closeSession(sessionId: string, userId: string, status: 'c
 		`UPDATE ig_sessions SET status = $3, ended_at = NOW() WHERE id = $1 AND clerk_user_id = $2`,
 		[sessionId, userId, status]
 	);
+}
+
+export function sessionDurationLimitMinutesForPlan(plan: PlanTier): number {
+	return plan === 'free' ? 15 : 40;
+}
+
+async function activeSessionElapsedSeconds(sessionId: string, userId: string): Promise<number | null> {
+	if (!isDBConnected()) {
+		loadMemoryStoreOnce();
+		const session = sessions.get(sessionId);
+		if (!session || session.userId !== userId || session.status !== 'active') return null;
+		return Math.max(0, Math.floor((Date.now() - session.startTime) / 1000));
+	}
+	const pool = getPool()!;
+	const { rows } = await pool.query<{ started_at: Date }>(
+		`SELECT started_at
+     FROM ig_sessions
+     WHERE id = $1 AND clerk_user_id = $2 AND status = 'active'
+     LIMIT 1`,
+		[sessionId, userId]
+	);
+	if (!rows.length) return null;
+	return Math.max(0, Math.floor((Date.now() - new Date(rows[0].started_at).getTime()) / 1000));
+}
+
+export async function getActiveSessionDurationStatus(
+	sessionId: string,
+	userId: string
+): Promise<{
+	exists: boolean;
+	elapsedSeconds: number;
+	limitMinutes: number;
+	overLimit: boolean;
+}> {
+	const user = await getUserFromDB(userId);
+	const limitMinutes = sessionDurationLimitMinutesForPlan(user?.plan || 'free');
+	const elapsedSeconds = await activeSessionElapsedSeconds(sessionId, userId);
+	if (elapsedSeconds === null) {
+		return {
+			exists: false,
+			elapsedSeconds: 0,
+			limitMinutes,
+			overLimit: false,
+		};
+	}
+	return {
+		exists: true,
+		elapsedSeconds,
+		limitMinutes,
+		overLimit: elapsedSeconds >= limitMinutes * 60,
+	};
 }
 
 /** @deprecated Prefer getActiveSessionsForUser */

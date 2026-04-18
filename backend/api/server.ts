@@ -16,18 +16,18 @@ const apiDir =
     : // CJS bundle: tsup leaves this as the module __dirname (path to backend/api/server.cjs inside asar).
       (typeof __dirname !== 'undefined' ? __dirname : path.join(process.cwd(), 'backend', 'api'));
 
-import { authMiddleware, clerkAuthMiddleware, quotaMiddleware } from '../middleware/authMiddleware';
+import { analyzeQuotaMiddleware, authMiddleware, clerkAuthMiddleware, quotaMiddleware } from '../middleware/authMiddleware';
 import { apiBurstLimiter } from '../middleware/rateLimiter';
 import {
   recordVoiceUsage,
   recordChatUsage,
+  effectiveQuotaLimits,
   getRemainingQuota,
   upgradeUserPlan,
   getUserFromDB,
   createUserInDB,
   resetMonthlyUsageIfNeeded,
-  checkTrialExpired,
-  calculateTrialDaysRemaining,
+  sessionDurationLimitMinutesForPlan,
 } from '../storage/usageStorage';
 import { PLAN_LIMITS } from '../../shared/constants/planLimits';
 import { AuthRequest } from '../../shared/types';
@@ -133,6 +133,25 @@ function extractPreviewExplanationFromJsonStream(partial: string): string {
     out += c;
   }
   return out.trim();
+}
+
+type AnswerStyle = 'short' | 'balanced' | 'detailed';
+
+function answerStyleFromRequest(req: express.Request): AnswerStyle {
+  const raw = req.headers['x-answer-style'];
+  const v = (Array.isArray(raw) ? raw[0] : raw || '').toString().trim().toLowerCase();
+  if (v === 'short' || v === 'detailed') return v;
+  return 'balanced';
+}
+
+function applyAnswerStyleToPrompt(basePrompt: string, style: AnswerStyle): string {
+  if (style === 'short') {
+    return `${basePrompt}\n\nAdditional style requirement: keep the response concise (2-4 short paragraphs or 4-6 bullets). Prioritize direct interview-ready language over depth.`;
+  }
+  if (style === 'detailed') {
+    return `${basePrompt}\n\nAdditional style requirement: provide a more detailed response with clear structure, practical examples, and trade-offs when relevant.`;
+  }
+  return basePrompt;
 }
 
 function normalizeCorsOrigin(origin: string): string {
@@ -278,7 +297,7 @@ export async function startServer(): Promise<number | express.Express> {
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
     res.header(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, x-api-key, x-model, x-persona, x-voice-model, x-mode, x-client-fingerprint, Cache-Control, cache-control, Pragma, pragma'
+      'Content-Type, Authorization, x-api-key, x-model, x-persona, x-voice-model, x-mode, x-answer-style, x-client-fingerprint, Cache-Control, cache-control, Pragma, pragma'
     );
 
     if (req.method === 'OPTIONS') {
@@ -517,13 +536,14 @@ export async function startServer(): Promise<number | express.Express> {
     }
   });
 
-  app.post("/api/analyze", quotaMiddleware('chat'), async (req: express.Request, res) => {
+  app.post("/api/analyze", analyzeQuotaMiddleware, async (req: express.Request, res) => {
     try {
       const authReq = req as AuthRequest;
       
       const customModel = (req.headers['x-model'] as string) || '';
       const persona = (req.headers['x-persona'] as string) || 'Technical Interviewer';
       const mode = (req.headers['x-mode'] as string) || 'voice';
+      const answerStyle = answerStyleFromRequest(req);
       const groq = getGroq(clientGroqKeyFromRequest(req));
 
       const supportsLogprobs = (model: string) => {
@@ -655,13 +675,13 @@ Rules:
         }
 
         // ── STEP 2: Build Adaptive Prompt ─────────────────────────────
-        const chatSystemPrompt = buildChatSystemPrompt({
+        const chatSystemPrompt = applyAnswerStyleToPrompt(buildChatSystemPrompt({
           questionType,
           difficulty,
           resume,
           jd,
           persona,
-        });
+        }), answerStyle);
 
         // ── STEP 3: Generate Answer ────────────────────────────────────
         const chatModel = fastAnalyze ? "llama-3.1-8b-instant" : "llama-3.3-70b-versatile";
@@ -841,11 +861,6 @@ Rules:
            voiceData.isQuestion = false;
         }
         
-        // Record chat usage if user authenticated (voice mode also counts as chat message)
-        if (authReq.user) {
-          await recordChatUsage(authReq.user.userId, 1);
-        }
-        
         return res.json(voiceData);
       }
 
@@ -864,6 +879,7 @@ Rules:
       const customModel = (req.headers['x-model'] as string) || '';
       const persona = (req.headers['x-persona'] as string) || 'Technical Interviewer';
       const mode = (req.headers['x-mode'] as string) || 'chat';
+      const answerStyle = answerStyleFromRequest(req);
       const groq = getGroq(clientGroqKeyFromRequest(req));
       const { transcript, resume, jd } = req.body || {};
 
@@ -897,13 +913,13 @@ Rules:
         }
       }
 
-      const chatSystemPrompt = buildChatSystemPrompt({
+      const chatSystemPrompt = applyAnswerStyleToPrompt(buildChatSystemPrompt({
         questionType,
         difficulty,
         resume,
         jd,
         persona,
-      });
+      }), answerStyle);
 
       const chatModel = customModel || (fastAnalyze ? 'llama-3.1-8b-instant' : 'llama-3.3-70b-versatile');
       const stream = await groq.chat.completions.create({
@@ -985,9 +1001,6 @@ Rules:
       return res.status(401).json({ error: 'User not found' });
     }
     resetMonthlyUsageIfNeeded(user);
-    if (user.plan === 'free' && checkTrialExpired(user)) {
-      return res.status(402).json({ message: 'Free trial expired. Upgrade to continue.', code: 'trial_expired' });
-    }
     const planFeatures = PLAN_LIMITS[user.plan].features;
     if (!planFeatures.cacheGeneration) {
       return res.status(403).json({
@@ -1147,6 +1160,7 @@ Rules:
 
       resetMonthlyUsageIfNeeded(user);
       const planConfig = PLAN_LIMITS[user.plan] ?? PLAN_LIMITS.free;
+      const limits = effectiveQuotaLimits(user.plan);
 
       const response = {
         user: {
@@ -1158,26 +1172,26 @@ Rules:
         quotas: {
           voiceMinutes: {
             used: user.voiceMinutesUsed,
-            limit: planConfig.voiceMinutesPerMonth,
-            remaining: Math.max(0, planConfig.voiceMinutesPerMonth - user.voiceMinutesUsed),
-            percentUsed: pct(user.voiceMinutesUsed, planConfig.voiceMinutesPerMonth),
+            limit: limits.voiceLimit,
+            remaining: Math.max(0, limits.voiceLimit - user.voiceMinutesUsed),
+            percentUsed: pct(user.voiceMinutesUsed, limits.voiceLimit),
           },
           chatMessages: {
             used: user.chatMessagesUsed,
-            limit: planConfig.chatMessagesPerMonth,
-            remaining: Math.max(0, planConfig.chatMessagesPerMonth - user.chatMessagesUsed),
-            percentUsed: pct(user.chatMessagesUsed, planConfig.chatMessagesPerMonth),
+            limit: limits.chatLimit,
+            remaining: Math.max(0, limits.chatLimit - user.chatMessagesUsed),
+            percentUsed: pct(user.chatMessagesUsed, limits.chatLimit),
           },
           sessions: {
             used: user.sessionsUsed,
-            limit: planConfig.sessionsPerMonth,
-            remaining: Math.max(0, planConfig.sessionsPerMonth - user.sessionsUsed),
-            percentUsed: pct(user.sessionsUsed, planConfig.sessionsPerMonth),
+            limit: limits.sessionsLimit,
+            remaining: Math.max(0, limits.sessionsLimit - user.sessionsUsed),
+            percentUsed: pct(user.sessionsUsed, limits.sessionsLimit),
           },
         },
         features: planConfig.features,
         currentMonth: user.currentMonth,
-        trialDaysRemaining: user.plan === 'free' && !checkTrialExpired(user) ? calculateTrialDaysRemaining(user) : 0,
+        trialDaysRemaining: 0,
       };
 
       // Prevent browser caching to ensure real-time quota updates
@@ -1251,6 +1265,8 @@ Rules:
 
       const { createSession } = await import('../storage/usageStorage');
       const sessionId = await createSession(authReq.user.userId);
+      const user = await getUserFromDB(authReq.user.userId);
+      const durationLimitMinutes = sessionDurationLimitMinutesForPlan(user?.plan || 'free');
 
       if (!sessionId) {
         return res.status(500).json({ error: 'Failed to create session' });
@@ -1258,6 +1274,7 @@ Rules:
 
       res.json({
         sessionId,
+        durationLimitMinutes,
         message: `Session started: ${sessionId}`,
       });
     } catch (error: any) {
@@ -1277,7 +1294,20 @@ Rules:
         return res.status(401).json({ error: 'User not authenticated or missing session ID' });
       }
 
-      const { updateSession } = await import('../storage/usageStorage');
+      const { closeSession, getActiveSessionDurationStatus, updateSession } = await import('../storage/usageStorage');
+      const duration = await getActiveSessionDurationStatus(sessionId, authReq.user.userId);
+      if (!duration.exists) {
+        return res.status(404).json({ error: 'Session not found or already closed' });
+      }
+      if (duration.overLimit) {
+        await closeSession(sessionId, authReq.user.userId, 'abandoned');
+        return res.status(402).json({
+          error: `Session reached max duration (${duration.limitMinutes} minutes). Start a new session.`,
+          code: 'session_duration_exceeded',
+          elapsedSeconds: duration.elapsedSeconds,
+          limitMinutes: duration.limitMinutes,
+        });
+      }
       await updateSession(sessionId, authReq.user.userId, questionsAsked || 0, voiceMinutesUsed || 0);
 
       res.json({

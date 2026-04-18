@@ -7,7 +7,6 @@ import { loadClerkUserForRequest } from '../services/clerkUserSync';
 import {
 	getUserFromDB,
 	resetMonthlyUsageIfNeeded,
-	checkTrialExpired,
 	getRemainingQuota,
 } from '../storage/usageStorage';
 
@@ -148,14 +147,6 @@ export function quotaMiddleware(quotaType: 'voice' | 'chat' | 'session'): Reques
 
 			resetMonthlyUsageIfNeeded(user);
 
-			if (user.plan === 'free' && checkTrialExpired(user)) {
-				res.status(402).json({
-					message: 'Free trial expired. Upgrade to continue.',
-					code: 'trial_expired',
-				});
-				return;
-			}
-
 			const remaining = await getRemainingQuota(authReq.user.userId, quotaType);
 			if (remaining <= 0) {
 				res.status(402).json({
@@ -173,3 +164,11 @@ export function quotaMiddleware(quotaType: 'voice' | 'chat' | 'session'): Reques
 		}
 	};
 }
+
+/** `/api/analyze` supports chat and voice modes; enforce the matching quota bucket. */
+export const analyzeQuotaMiddleware: RequestHandler = (req, res, next) => {
+	const rawMode = req.headers['x-mode'];
+	const mode = (Array.isArray(rawMode) ? rawMode[0] : rawMode || '').toString().trim().toLowerCase();
+	const quotaType = mode === 'chat' ? 'chat' : 'voice';
+	return quotaMiddleware(quotaType)(req, res, next);
+};
