@@ -124,12 +124,23 @@ function sectionIcon(title: string): string {
 
 function CodeBlock({ code, lang }: { code: string; lang?: string }) {
   const [copied, setCopied] = useState(false);
-  const copy = () => { navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  const isElectronShell = typeof navigator !== 'undefined' && /electron/i.test(navigator.userAgent);
+  const copy = () => {
+    if (isElectronShell) return;
+    navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
   return (
     <div className="code-block">
       <div className="code-block-header">
         <span className="code-lang">{lang || 'code'}</span>
-        <button className="code-copy-btn" onClick={copy}>
+        <button
+          className="code-copy-btn"
+          onClick={copy}
+          disabled={isElectronShell}
+          title={isElectronShell ? 'Copy is disabled in desktop app' : 'Copy code'}
+        >
           {copied ? <><CheckCircle size={11} /> Copied</> : <><Copy size={11} /> Copy</>}
         </button>
       </div>
@@ -710,13 +721,13 @@ export default function OverlayWidget() {
     document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
   };
 
+  const isElectronShell = typeof navigator !== 'undefined' && /electron/i.test(navigator.userAgent);
   const copyText = (text: string) => {
+    if (isElectronShell) return;
     navigator.clipboard.writeText(text);
     setCopiedAlert(true);
     setTimeout(() => setCopiedAlert(false), 2000);
   };
-
-  const isElectronShell = typeof navigator !== 'undefined' && /electron/i.test(navigator.userAgent);
   /** Frameless window: macOS uses native traffic lights; Windows/Linux need in-app min/max. */
   const isMacElectron =
     isElectronShell &&
