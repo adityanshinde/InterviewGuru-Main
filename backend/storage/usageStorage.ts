@@ -195,6 +195,7 @@ function pgRowToUser(r: {
 	chat_messages_used: number;
 	sessions_used: number;
 	created_at: Date;
+	stripe_customer_id?: string | null;
 }): UserRecord {
 	return {
 		userId: r.clerk_user_id,
@@ -211,6 +212,7 @@ function pgRowToUser(r: {
 		sessionHistory: [],
 		createdAt: new Date(r.created_at).getTime(),
 		lastActiveAt: Date.now(),
+		stripeCustomerId: r.stripe_customer_id || undefined,
 	};
 }
 
@@ -243,7 +245,8 @@ async function pgLoadUser(userId: string): Promise<UserRecord | null> {
 	await pgEnsureBillingMonth(userId);
 	const { rows } = await pool.query(
 		`SELECT clerk_user_id, email, plan, subscription_status, trial_started_at,
-            billing_month, voice_minutes_used, chat_messages_used, sessions_used, created_at
+            billing_month, voice_minutes_used, chat_messages_used, sessions_used, created_at,
+            stripe_customer_id
      FROM ig_users WHERE clerk_user_id = $1`,
 		[userId]
 	);

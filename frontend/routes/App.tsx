@@ -6,7 +6,9 @@
 import OverlayWidget from '@frontend/components/OverlayWidget';
 import LandingPage from '@frontend/pages/LandingPage';
 import { Documentation, ApiReference, Blog, FAQ, PrivacyPolicy, TermsOfService, Security, ContactPage } from '@frontend/pages/FooterPages';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { DashboardHome, ProfilePage, UsagePage, BillingPage, SessionsPage } from '@frontend/pages/dashboard';
+import { AdminDashboard, AdminUsers, AdminAnalytics, AdminSettings } from '@frontend/pages/admin';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { SignedIn, SignedOut, SignIn, SignUp } from '@clerk/clerk-react';
 import AppSignInGate from '@frontend/components/AppSignInGate';
 import AppAuthConfigMissing from '@frontend/components/AppAuthConfigMissing';
@@ -55,6 +57,7 @@ export default function App() {
             />
           </>
         )}
+        {/* Main App / Interview Widget */}
         <Route
           path="/app"
           element={
@@ -72,6 +75,131 @@ export default function App() {
             )
           }
         />
+
+        {/* Dashboard Routes */}
+        {clerkEnabled && (
+          <>
+            <Route
+              path="/app/dashboard"
+              element={
+                <>
+                  <SignedIn>
+                    <DashboardHome />
+                  </SignedIn>
+                  <SignedOut>
+                    <Navigate to="/sign-in" replace />
+                  </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path="/app/profile"
+              element={
+                <>
+                  <SignedIn>
+                    <ProfilePage />
+                  </SignedIn>
+                  <SignedOut>
+                    <Navigate to="/sign-in" replace />
+                  </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path="/app/usage"
+              element={
+                <>
+                  <SignedIn>
+                    <UsagePage />
+                  </SignedIn>
+                  <SignedOut>
+                    <Navigate to="/sign-in" replace />
+                  </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path="/app/billing"
+              element={
+                <>
+                  <SignedIn>
+                    <BillingPage />
+                  </SignedIn>
+                  <SignedOut>
+                    <Navigate to="/sign-in" replace />
+                  </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path="/app/sessions"
+              element={
+                <>
+                  <SignedIn>
+                    <SessionsPage />
+                  </SignedIn>
+                  <SignedOut>
+                    <Navigate to="/sign-in" replace />
+                  </SignedOut>
+                </>
+              }
+            />
+
+            {/* Admin Routes - Protected by SignedIn + backend admin middleware */}
+            <Route
+              path="/admin"
+              element={
+                <>
+                  <SignedIn>
+                    <AdminDashboard />
+                  </SignedIn>
+                  <SignedOut>
+                    <Navigate to="/sign-in" replace />
+                  </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path="/admin/users"
+              element={
+                <>
+                  <SignedIn>
+                    <AdminUsers />
+                  </SignedIn>
+                  <SignedOut>
+                    <Navigate to="/sign-in" replace />
+                  </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path="/admin/analytics"
+              element={
+                <>
+                  <SignedIn>
+                    <AdminAnalytics />
+                  </SignedIn>
+                  <SignedOut>
+                    <Navigate to="/sign-in" replace />
+                  </SignedOut>
+                </>
+              }
+            />
+            <Route
+              path="/admin/settings"
+              element={
+                <>
+                  <SignedIn>
+                    <AdminSettings />
+                  </SignedIn>
+                  <SignedOut>
+                    <Navigate to="/sign-in" replace />
+                  </SignedOut>
+                </>
+              }
+            />
+          </>
+        )}
       </Routes>
     </BrowserRouter>
   );

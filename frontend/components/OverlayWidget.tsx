@@ -22,6 +22,7 @@ const clerkUiEnabled = hasAnyClerkPublishableKey();
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { getElectronIpc } from '../utils/electronIpc';
+import { StreamingAnswer, ConnectionStatus } from './StreamingAnswer';
 
 const ipc = typeof window !== 'undefined' ? getElectronIpc() : null;
 
@@ -442,11 +443,35 @@ export default function OverlayWidget() {
   };
 
   const onError = useCallback((msg: string) => showAlert(msg, 'error'), [showAlert]);
-  const { detectedQuestion, answer, liveAnswerText, isProcessing, processTranscript, askQuestion, resetAssistant } = useAIAssistant(undefined, onError);
-  const { isListening, isRateLimited, transcript, startListening, stopListening, clearTranscript } = useTabAudioCapture(
+  const appendTranscriptRef = useRef<(text: string) => void>(() => {});
+
+  const {
+    detectedQuestion,
+    answer,
+    liveAnswerText,
+    isProcessing,
     processTranscript,
-    onError
-  );
+    askQuestion,
+    resetAssistant,
+    realtimeEnabled,
+    realtimeStatus,
+    useWsTransport,
+    connectRealtime,
+    disconnectRealtime,
+    sendAudioChunk,
+  } = useAIAssistant({
+    onError,
+    planTier: planStatus.plan,
+    features: planStatus.features,
+    onWsTranscript: (text) => appendTranscriptRef.current(text),
+  });
+
+  const { isListening, isRateLimited, transcript, startListening, stopListening, clearTranscript, appendTranscript } =
+    useTabAudioCapture(processTranscript, onError, { realtimeMode: realtimeEnabled, sendAudioChunk });
+
+  useEffect(() => {
+    appendTranscriptRef.current = appendTranscript;
+  }, [appendTranscript]);
 
   const handleChatSubmit = async () => {
     const q = chatInput.trim();
@@ -460,12 +485,16 @@ export default function OverlayWidget() {
   const toggleListen = useCallback(async () => {
     if (isListening) {
       stopListening();
+      disconnectRealtime();
       setSessionStartTime(null);
       ipc?.send('chat-input-blurred');
       await closeSession();
     } else {
       ipc?.send('chat-input-focused');
       try {
+        if (realtimeEnabled) {
+          await connectRealtime();
+        }
         await startListening();
         setSessionStartTime(Date.now());
         await startSession({ persona, resume: resume ? resume.substring(0, 500) : undefined, jd: jd ? jd.substring(0, 500) : undefined });
@@ -474,7 +503,7 @@ export default function OverlayWidget() {
       }
       ipc?.send('chat-input-blurred');
     }
-  }, [isListening, startListening, stopListening, closeSession, startSession, persona, resume, jd]);
+  }, [isListening, startListening, stopListening, closeSession, startSession, persona, resume, jd, realtimeEnabled, connectRealtime, disconnectRealtime]);
 
   useEffect(() => {
     if (!ipc) return;
@@ -1286,6 +1315,12 @@ export default function OverlayWidget() {
                     ? <><span className="live-dot" /> <span className="transcript-label live">Recording</span></>
                     : <><Activity size={11} className="text-white/20" /> <span className="transcript-label">Transcript</span></>}
                   {isRateLimited && <span className="rate-limit-badge">⚠ Rate limited</span>}
+                  {realtimeEnabled && (
+                    <ConnectionStatus status={realtimeStatus} showLabel={false} className="ml-1" />
+                  )}
+                  {useWsTransport && (
+                    <span className="text-[10px] text-cyan-400/80 font-medium">Realtime</span>
+                  )}
                 </div>
                 <button onClick={handleClear} className="clear-btn"><Trash2 size={11} /> Clear</button>
               </div>
@@ -1417,7 +1452,12 @@ export default function OverlayWidget() {
                   <div className="ai-avatar-wrap"><Brain size={13} /></div>
                   <div className="typing-bubble">
                     <span className="ai-persona-label">🤖 Live Draft</span>
-                    <p className="ai-summary whitespace-pre-wrap">{liveAnswerText}</p>
+                    <StreamingAnswer
+                      text={liveAnswerText}
+                      isStreaming={isProcessing}
+                      speed="fast"
+                      className="ai-summary whitespace-pre-wrap"
+                    />
                   </div>
                 </div>
               )}

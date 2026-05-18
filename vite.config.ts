@@ -25,6 +25,12 @@ export default defineConfig(({mode}) => {
       outDir: 'build',
       emptyOutDir: true,
     },
+    worker: {
+      format: 'es',
+    },
+    optimizeDeps: {
+      exclude: ['@xenova/transformers'],
+    },
     define,
     resolve: {
       alias: {

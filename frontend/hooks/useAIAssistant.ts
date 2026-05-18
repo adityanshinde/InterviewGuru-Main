@@ -1,9 +1,12 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { GoogleGenAI, Modality } from "@google/genai";
 import { API_ENDPOINT } from '../../shared/utils/config';
 import { optionalGroqApiKeyHeaders } from '../utils/optionalGroqApiKeyHeaders';
 import { buildSpeechPrompt } from '../../shared/prompts';
 import { useApiAuthHeaders } from '../providers/ApiAuthContext';
+import { useLocalClassifier, type ClassificationResult } from './useLocalClassifier';
+import { useRealtimeAI, type AnswerData } from './useRealtimeAI';
+import { hasRealtimeStreaming, type PlanTier } from '../../shared/constants/planLimits';
 
 export interface Answer {
 	bullets: string[];
@@ -11,6 +14,7 @@ export interface Answer {
 	explanation?: string;
 	code?: string;
 	codeLanguage?: string;
+	sections?: Array<{ title: string; content: string; points?: string[] }>;
 }
 
 export interface QuestionDetection {
@@ -20,19 +24,129 @@ export interface QuestionDetection {
 	type: string;
 }
 
-export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: string) => void) {
+export interface UseAIAssistantOptions {
+	onQuestionDetected?: () => void;
+	onError?: (msg: string) => void;
+	onWsTranscript?: (text: string) => void;
+	planTier?: PlanTier;
+	features?: Record<string, boolean>;
+}
+
+function mapWsAnswerToAnswer(data: AnswerData): Answer {
+	return {
+		bullets: data.bullets || [],
+		spoken: data.spoken || '',
+		explanation: data.explanation,
+		code: data.code,
+		codeLanguage: data.codeLanguage,
+		sections: data.sections,
+	};
+}
+
+export function useAIAssistant(options: UseAIAssistantOptions = {}) {
+	const { onQuestionDetected, onError, onWsTranscript, planTier = 'free', features } = options;
+	const onWsTranscriptRef = useRef(onWsTranscript);
+	useEffect(() => {
+		onWsTranscriptRef.current = onWsTranscript;
+	}, [onWsTranscript]);
 	const getAuthHeaders = useApiAuthHeaders();
+	const { classify, modelState: classifierState, isReady: classifierReady } = useLocalClassifier();
+
+	const realtimeFeatureEnabled = useMemo(
+		() => features?.realtimeStreaming ?? hasRealtimeStreaming(planTier),
+		[features?.realtimeStreaming, planTier]
+	);
+
 	const [detectedQuestion, setDetectedQuestion] = useState<QuestionDetection | null>(null);
 	const [answer, setAnswer] = useState<Answer | null>(null);
-	const [liveAnswerText, setLiveAnswerText] = useState('');
+	const [liveAnswerTextHttp, setLiveAnswerTextHttp] = useState('');
 	const [isProcessing, setIsProcessing] = useState(false);
 	const [isSpeaking, setIsSpeaking] = useState(false);
 
 	const transcriptBufferRef = useRef<string>('');
-	const lastQuestionTimeRef = useRef<number>(0);
 	const lastProcessedTextRef = useRef<string>('');
 	const audioRef = useRef<HTMLAudioElement | null>(null);
 	const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+	const lastClassificationRef = useRef<ClassificationResult | null>(null);
+	const speculativeGenRef = useRef(0);
+	const wsTranscriptHandlerRef = useRef<(text: string) => void>(() => {});
+
+	const handleWsQuestion = useCallback((q: { question: string; confidence: number; type: string }) => {
+		setDetectedQuestion({
+			isQuestion: true,
+			question: q.question,
+			confidence: q.confidence,
+			type: q.type,
+		});
+		setIsProcessing(true);
+	}, []);
+
+	const handleWsAnswerComplete = useCallback((data: AnswerData) => {
+		const ans = mapWsAnswerToAnswer(data);
+		setAnswer(ans);
+		setLiveAnswerTextHttp('');
+		setIsProcessing(false);
+		if (ans.spoken) playSpeechRef.current(ans.spoken);
+		onQuestionDetectedRef.current?.();
+		transcriptBufferRef.current = transcriptBufferRef.current.slice(-20);
+	}, []);
+
+	const onQuestionDetectedRef = useRef(onQuestionDetected);
+	const playSpeechRef = useRef<(text: string) => Promise<void>>(async () => {});
+
+	useEffect(() => {
+		onQuestionDetectedRef.current = onQuestionDetected;
+	}, [onQuestionDetected]);
+
+	const realtime = useRealtimeAI({
+		fallbackToHTTP: true,
+		onTranscript: (text, isPartial) => {
+			if (isPartial) return;
+			wsTranscriptHandlerRef.current(text);
+		},
+		onQuestionDetected: handleWsQuestion,
+		onAnswerToken: (token) => {
+			setLiveAnswerTextHttp((prev) => prev + token);
+		},
+		onAnswerComplete: handleWsAnswerComplete,
+		onError: (msg) => onError?.(msg),
+	});
+
+	const useWsTransport = realtimeFeatureEnabled && realtime.isConnected;
+
+	const liveAnswerText = useWsTransport && realtime.isStreaming
+		? realtime.streamingAnswer || liveAnswerTextHttp
+		: liveAnswerTextHttp || (realtimeFeatureEnabled ? realtime.streamingAnswer : '');
+
+	const syncRealtimeConfig = useCallback(() => {
+		realtime.updateConfig({
+			model: localStorage.getItem('groq_model') || 'llama-3.1-8b-instant',
+			voiceModel: localStorage.getItem('groq_voice_model') || 'whisper-large-v3-turbo',
+			persona: localStorage.getItem('groq_persona') || 'Technical Interviewer',
+			mode: 'voice',
+			resume: localStorage.getItem('groq_resume') || '',
+			jd: localStorage.getItem('groq_jd') || '',
+		});
+	}, [realtime]);
+
+	const connectRealtime = useCallback(async () => {
+		if (!realtimeFeatureEnabled) return false;
+		syncRealtimeConfig();
+		await realtime.connect();
+		return realtime.status === 'connected';
+	}, [realtimeFeatureEnabled, realtime, syncRealtimeConfig]);
+
+	const disconnectRealtime = useCallback(() => {
+		realtime.disconnect();
+	}, [realtime]);
+
+	const sendAudioChunk = useCallback(
+		(base64: string, mimeType: string): boolean => {
+			if (!useWsTransport) return false;
+			return realtime.sendAudioChunk(base64, mimeType);
+		},
+		[useWsTransport, realtime]
+	);
 
 	const answerStyleHeader = useCallback((): Record<string, string> => {
 		try {
@@ -97,7 +211,6 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 				const audioUrl = URL.createObjectURL(audioBlob);
 
 				if (audioRef.current) {
-					// Set output device if supported
 					if (outputDeviceId && (audioRef.current as any).setSinkId) {
 						try {
 							await (audioRef.current as any).setSinkId(outputDeviceId);
@@ -116,255 +229,204 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 		}
 	}, []);
 
-	const processTranscript = useCallback(async (newText: string) => {
-		// If AI is speaking, ignore the transcript to avoid feedback loops
-		if (isSpeaking) return;
+	useEffect(() => {
+		playSpeechRef.current = playSpeech;
+	}, [playSpeech]);
 
-		// Append to buffer
-		transcriptBufferRef.current += ' ' + newText;
+	const runSpeculativeClassification = useCallback((text: string) => {
+		if (text.trim().length <= 20) return;
+		const gen = ++speculativeGenRef.current;
+		void classify(text).then((result) => {
+			if (gen !== speculativeGenRef.current) return;
+			lastClassificationRef.current = result;
+		});
+	}, [classify]);
 
-		// Keep buffer to last 1000 characters to avoid huge context and reduce latency
-		if (transcriptBufferRef.current.length > 1000) {
-			transcriptBufferRef.current = transcriptBufferRef.current.slice(-1000);
+	const processTranscriptHttp = useCallback(async (currentText: string) => {
+		const classificationResult = await classify(currentText);
+		lastClassificationRef.current = classificationResult;
+
+		const CONFIDENCE_THRESHOLD = 0.7;
+		if (!classificationResult.isQuestion || classificationResult.confidence < CONFIDENCE_THRESHOLD) {
+			console.log(
+				`[Client] Classifier filtered: isQuestion=${classificationResult.isQuestion}, ` +
+				`confidence=${classificationResult.confidence.toFixed(2)}, type=${classificationResult.type}`
+			);
+			return;
 		}
 
-		const currentText = transcriptBufferRef.current.trim();
-    
-		// Clear existing debounce timer
-		if (debounceTimerRef.current) {
-				clearTimeout(debounceTimerRef.current);
-		}
-
-		// Smart Debouncing: Wait 800ms of "silence" before we consider sending the text
-		debounceTimerRef.current = setTimeout(async () => {
-			// Only process if not already processing, text has changed significantly, and we have enough text
-			if (!isProcessing && currentText.length > 15 && currentText !== lastProcessedTextRef.current) {
-        
-				// ── Heuristics Pre-filter ──
-				// Check if it looks remotely like a question to avoid wasting LLM/API calls
-				const lowerText = currentText.toLowerCase();
-        
-				// Look for question marks OR common question framing words
-				const hasQuestionMark = currentText.includes('?');
-				const hasQuestionWord = /\b(what|how|why|when|where|who|can you|could you|explain|describe|tell me|is it|does it|are there|would you|should we)\b/.test(lowerText);
-        
-				if (!hasQuestionMark && !hasQuestionWord) {
-						// Not a question, skip processing entirely.
-						console.log("[Client] Heuristic filter skipped non-question:", currentText.slice(-50));
-						return;
-				}
-			try {
-				setIsProcessing(true);
-				lastProcessedTextRef.current = currentText;
-				const model = localStorage.getItem('groq_model') || 'llama-3.1-8b-instant';
-				const persona = localStorage.getItem('groq_persona') || 'Technical Interviewer';
-				const resume = localStorage.getItem('groq_resume') || '';
-				const jd = localStorage.getItem('groq_jd') || '';
-				const auth = await getAuthHeaders();
-
-				const response = await fetch(API_ENDPOINT('/api/analyze'), {
-					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-						'x-model': model,
-						'x-persona': persona,
-						Accept: 'application/json',
-						...answerStyleHeader(),
-						...optionalGroqApiKeyHeaders(),
-						...auth,
-					},
-					body: JSON.stringify({
-						transcript: transcriptBufferRef.current,
-						resume,
-						jd
-					})
-				});
-
-				if (response.status === 401) {
-					if (onError) onError('Sign in required.');
-					setIsProcessing(false);
-					return;
-				}
-
-				if (response.status === 402) {
-					const errData = await response.json();
-					const errorMsg = errData.message || 'Monthly quota exceeded. Please upgrade your plan.';
-					if (onError) onError(errorMsg);
-					setIsProcessing(false);
-					return;
-				}
-
-				if (!response.ok) {
-					const errData = await response.json();
-					throw new Error(errData.error || errData.details || `Server HTTP Error: ${response.status}`);
-				}
-
-				const data = await response.json();
-
-				if (data.isQuestion && data.confidence > 0.6 && data.question) {
-					setDetectedQuestion({
-						isQuestion: data.isQuestion,
-						question: data.question,
-						confidence: data.confidence,
-						type: data.type || 'general'
-					});
-
-					if (data.bullets && data.spoken) {
-						setAnswer({
-							bullets: data.bullets,
-							spoken: data.spoken
-						});
-
-						// Play speech if enabled
-						playSpeech(data.spoken);
-					}
-
-					// Call the callback to clear the UI transcript
-					if (onQuestionDetected) {
-						onQuestionDetected();
-					}
-
-					// Clear buffer after a successful detection to prevent re-detecting the same question
-					// We keep a tiny bit of context just in case
-					transcriptBufferRef.current = transcriptBufferRef.current.slice(-20);
-				}
-				setIsProcessing(false);
-			} catch (error: any) {
-				console.error('AI Processing Error:', error);
-				setIsProcessing(false);
-				if (onError) onError(error.message || 'AI Processing failed. Check API key format.');
-			}
-		}
-		}, 800); // Wait 800ms between transcript updates before processing
-	}, [isProcessing, isSpeaking, playSpeech, onQuestionDetected, getAuthHeaders, onError, answerStyleHeader]);
-
-	const askQuestion = useCallback(async (questionText: string) => {
-		if (!questionText.trim() || isProcessing) return;
 		try {
 			setIsProcessing(true);
-			setLiveAnswerText('');
-
+			lastProcessedTextRef.current = currentText;
 			const model = localStorage.getItem('groq_model') || 'llama-3.1-8b-instant';
 			const persona = localStorage.getItem('groq_persona') || 'Technical Interviewer';
 			const resume = localStorage.getItem('groq_resume') || '';
 			const jd = localStorage.getItem('groq_jd') || '';
 			const auth = await getAuthHeaders();
 
-			const streamResponse = await fetch(API_ENDPOINT('/api/analyze/stream'), {
+			const response = await fetch(API_ENDPOINT('/api/analyze'), {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'x-model': model,
+					'x-persona': persona,
+					Accept: 'application/json',
+					...answerStyleHeader(),
+					...optionalGroqApiKeyHeaders(),
+					...auth,
+				},
+				body: JSON.stringify({
+					transcript: transcriptBufferRef.current,
+					resume,
+					jd,
+				}),
+			});
+
+			if (response.status === 401) {
+				onError?.('Sign in required.');
+				setIsProcessing(false);
+				return;
+			}
+
+			if (response.status === 402) {
+				const errData = await response.json();
+				onError?.(errData.message || 'Monthly quota exceeded. Please upgrade your plan.');
+				setIsProcessing(false);
+				return;
+			}
+
+			if (!response.ok) {
+				const errData = await response.json();
+				throw new Error(errData.error || errData.details || `Server HTTP Error: ${response.status}`);
+			}
+
+			const data = await response.json();
+
+			if (data.isQuestion && data.confidence > 0.6 && data.question) {
+				setDetectedQuestion({
+					isQuestion: data.isQuestion,
+					question: data.question,
+					confidence: data.confidence,
+					type: data.type || 'general',
+				});
+
+				if (data.bullets && data.spoken) {
+					setAnswer({ bullets: data.bullets, spoken: data.spoken });
+					playSpeech(data.spoken);
+				}
+
+				onQuestionDetectedRef.current?.();
+				transcriptBufferRef.current = transcriptBufferRef.current.slice(-20);
+			}
+			setIsProcessing(false);
+		} catch (error: any) {
+			console.error('AI Processing Error:', error);
+			setIsProcessing(false);
+			onError?.(error.message || 'AI Processing failed. Check API key format.');
+		}
+	}, [classify, getAuthHeaders, onError, playSpeech, answerStyleHeader]);
+
+	wsTranscriptHandlerRef.current = (text: string) => {
+		transcriptBufferRef.current += ' ' + text;
+		if (transcriptBufferRef.current.length > 1000) {
+			transcriptBufferRef.current = transcriptBufferRef.current.slice(-1000);
+		}
+		onWsTranscriptRef.current?.(text);
+		runSpeculativeClassification(transcriptBufferRef.current.trim());
+	};
+
+	const processTranscript = useCallback(async (newText: string) => {
+		if (isSpeaking) return;
+
+		transcriptBufferRef.current += ' ' + newText;
+		if (transcriptBufferRef.current.length > 1000) {
+			transcriptBufferRef.current = transcriptBufferRef.current.slice(-1000);
+		}
+
+		const currentText = transcriptBufferRef.current.trim();
+		runSpeculativeClassification(currentText);
+
+		if (useWsTransport) {
+			return;
+		}
+
+		if (debounceTimerRef.current) {
+			clearTimeout(debounceTimerRef.current);
+		}
+
+		debounceTimerRef.current = setTimeout(async () => {
+			if (!isProcessing && currentText.length > 15 && currentText !== lastProcessedTextRef.current) {
+				await processTranscriptHttp(currentText);
+			}
+		}, 200);
+	}, [isProcessing, isSpeaking, useWsTransport, runSpeculativeClassification, processTranscriptHttp]);
+
+	const askQuestionHttp = useCallback(async (questionText: string) => {
+		setIsProcessing(true);
+		setLiveAnswerTextHttp('');
+
+		const model = localStorage.getItem('groq_model') || 'llama-3.1-8b-instant';
+		const persona = localStorage.getItem('groq_persona') || 'Technical Interviewer';
+		const resume = localStorage.getItem('groq_resume') || '';
+		const jd = localStorage.getItem('groq_jd') || '';
+		const auth = await getAuthHeaders();
+
+		const streamResponse = await fetch(API_ENDPOINT('/api/analyze/stream'), {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'x-model': model,
+				'x-persona': persona,
+				'x-mode': 'chat',
+				Accept: 'text/event-stream',
+				...answerStyleHeader(),
+				...optionalGroqApiKeyHeaders(),
+				...auth,
+			},
+			body: JSON.stringify({ transcript: questionText, resume, jd }),
+		});
+
+		if (streamResponse.status === 401) {
+			onError?.('Sign in required.');
+			setIsProcessing(false);
+			return;
+		}
+
+		if (streamResponse.status === 402) {
+			const errData = await streamResponse.json();
+			onError?.(errData.message || 'Monthly quota exceeded. Please upgrade your plan.');
+			setIsProcessing(false);
+			return;
+		}
+
+		if (!streamResponse.ok || !streamResponse.body) {
+			const fallbackResponse = await fetch(API_ENDPOINT('/api/analyze'), {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
 					'x-model': model,
 					'x-persona': persona,
 					'x-mode': 'chat',
-					Accept: 'text/event-stream',
-						...answerStyleHeader(),
+					Accept: 'application/json',
+					...answerStyleHeader(),
 					...optionalGroqApiKeyHeaders(),
 					...auth,
 				},
-				body: JSON.stringify({ transcript: questionText, resume, jd })
+				body: JSON.stringify({ transcript: questionText, resume, jd }),
 			});
 
-			if (streamResponse.status === 401) {
-				if (onError) onError('Sign in required.');
-				setIsProcessing(false);
-				return;
+			if (!fallbackResponse.ok) {
+				const errData = await fallbackResponse.json();
+				throw new Error(errData.error || errData.details || `Server HTTP Error: ${fallbackResponse.status}`);
 			}
 
-			if (streamResponse.status === 402) {
-				const errData = await streamResponse.json();
-				const errorMsg = errData.message || 'Monthly quota exceeded. Please upgrade your plan.';
-				if (onError) onError(errorMsg);
-				setIsProcessing(false);
-				return;
-			}
-
-			if (!streamResponse.ok || !streamResponse.body) {
-				const fallbackResponse = await fetch(API_ENDPOINT('/api/analyze'), {
-					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-						'x-model': model,
-						'x-persona': persona,
-						'x-mode': 'chat',
-						Accept: 'application/json',
-						...answerStyleHeader(),
-						...optionalGroqApiKeyHeaders(),
-						...auth,
-					},
-					body: JSON.stringify({ transcript: questionText, resume, jd })
-				});
-
-				if (!fallbackResponse.ok) {
-					const errData = await fallbackResponse.json();
-					throw new Error(errData.error || errData.details || `Server HTTP Error: ${fallbackResponse.status}`);
-				}
-
-				const data = await fallbackResponse.json();
-				const detectedQ = {
-					isQuestion: true,
-					question: questionText,
-					confidence: 1.0,
-					type: data.type || 'general'
-				};
-				setDetectedQuestion(detectedQ);
-				const ans: Answer = {
-					bullets: Array.isArray(data.bullets) ? data.bullets : [],
-					spoken: data.spoken || '',
-					explanation: data.explanation || data.answer || data.response || '',
-					code: data.code || '',
-					codeLanguage: data.codeLanguage || data.language || '',
-					sections: data.sections || [],
-				} as any;
-				setAnswer(ans);
-				playSpeech(data.spoken || '');
-				setLiveAnswerText('');
-				setIsProcessing(false);
-				return;
-			}
-
-			const reader = streamResponse.body.getReader();
-			const decoder = new TextDecoder();
-			let buffer = '';
-			let finalData: any = null;
-
-			while (true) {
-				const { value, done } = await reader.read();
-				if (done) break;
-				buffer += decoder.decode(value, { stream: true });
-				const events = buffer.split('\n\n');
-				buffer = events.pop() || '';
-				for (const event of events) {
-					const dataLine = event
-						.split('\n')
-						.find((line) => line.startsWith('data: '));
-					if (!dataLine) continue;
-					const payload = JSON.parse(dataLine.slice(6));
-					if (payload.type === 'preview' && payload.text) {
-						setLiveAnswerText((prev) => prev + payload.text);
-					} else if (payload.type === 'final') {
-						finalData = payload.data;
-					} else if (payload.type === 'error') {
-						throw new Error(payload.error || 'Analyze stream failed');
-					}
-				}
-			}
-
-			const data = finalData;
-			if (!data) {
-				throw new Error('No final streamed payload received');
-			}
-
-			// For manual chat, we always treat it as a question regardless of detection
-			const detectedQ = {
+			const data = await fallbackResponse.json();
+			setDetectedQuestion({
 				isQuestion: true,
 				question: questionText,
 				confidence: 1.0,
-				type: data.type || 'general'
-			};
-			setDetectedQuestion(detectedQ);
-
-			// Always store the answer — server guarantees at least sections or explanation or bullets
+				type: data.type || 'general',
+			});
 			const ans: Answer = {
 				bullets: Array.isArray(data.bullets) ? data.bullets : [],
 				spoken: data.spoken || '',
@@ -372,26 +434,118 @@ export function useAIAssistant(onQuestionDetected?: () => void, onError?: (msg: 
 				code: data.code || '',
 				codeLanguage: data.codeLanguage || data.language || '',
 				sections: data.sections || [],
-			} as any;
+			};
 			setAnswer(ans);
 			playSpeech(data.spoken || '');
-			setLiveAnswerText('');
-
+			setLiveAnswerTextHttp('');
 			setIsProcessing(false);
+			return;
+		}
+
+		const reader = streamResponse.body.getReader();
+		const decoder = new TextDecoder();
+		let buffer = '';
+		let finalData: any = null;
+
+		while (true) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			buffer += decoder.decode(value, { stream: true });
+			const events = buffer.split('\n\n');
+			buffer = events.pop() || '';
+			for (const event of events) {
+				const dataLine = event.split('\n').find((line) => line.startsWith('data: '));
+				if (!dataLine) continue;
+				const payload = JSON.parse(dataLine.slice(6));
+				if (payload.type === 'preview' && payload.text) {
+					setLiveAnswerTextHttp((prev) => prev + payload.text);
+				} else if (payload.type === 'final') {
+					finalData = payload.data;
+				} else if (payload.type === 'error') {
+					throw new Error(payload.error || 'Analyze stream failed');
+				}
+			}
+		}
+
+		const data = finalData;
+		if (!data) throw new Error('No final streamed payload received');
+
+		setDetectedQuestion({
+			isQuestion: true,
+			question: questionText,
+			confidence: 1.0,
+			type: data.type || 'general',
+		});
+
+		const ans: Answer = {
+			bullets: Array.isArray(data.bullets) ? data.bullets : [],
+			spoken: data.spoken || '',
+			explanation: data.explanation || data.answer || data.response || '',
+			code: data.code || '',
+			codeLanguage: data.codeLanguage || data.language || '',
+			sections: data.sections || [],
+		};
+		setAnswer(ans);
+		playSpeech(data.spoken || '');
+		setLiveAnswerTextHttp('');
+		setIsProcessing(false);
+	}, [getAuthHeaders, onError, playSpeech, answerStyleHeader]);
+
+	const askQuestion = useCallback(async (questionText: string) => {
+		if (!questionText.trim() || isProcessing) return;
+
+		try {
+			if (realtimeFeatureEnabled) {
+				syncRealtimeConfig();
+				if (!realtime.isConnected) {
+					await realtime.connect();
+				}
+				if (realtime.isConnected) {
+					const ok = await realtime.askQuestion(questionText);
+					if (ok) return;
+				}
+			}
+
+			await askQuestionHttp(questionText);
 		} catch (error: any) {
 			console.error('Chat AI Error:', error);
-			setLiveAnswerText('');
+			setLiveAnswerTextHttp('');
 			setIsProcessing(false);
-			if (onError) onError(error.message || 'Chat prompt failed. Check API key format.');
+			onError?.(error.message || 'Chat prompt failed. Check API key format.');
 		}
-	}, [isProcessing, playSpeech, getAuthHeaders, onError, answerStyleHeader]);
+	}, [
+		isProcessing,
+		realtimeFeatureEnabled,
+		realtime,
+		syncRealtimeConfig,
+		askQuestionHttp,
+		onError,
+	]);
 
 	const resetAssistant = useCallback(() => {
 		setDetectedQuestion(null);
 		setAnswer(null);
+		setLiveAnswerTextHttp('');
 		transcriptBufferRef.current = '';
 		lastProcessedTextRef.current = '';
-	}, []);
+		realtime.reset();
+	}, [realtime]);
 
-	return { detectedQuestion, answer, liveAnswerText, isProcessing, processTranscript, askQuestion, resetAssistant };
+	return {
+		detectedQuestion,
+		answer,
+		liveAnswerText,
+		isProcessing,
+		processTranscript,
+		askQuestion,
+		resetAssistant,
+		classifierState,
+		classifierReady,
+		realtimeEnabled: realtimeFeatureEnabled,
+		realtimeStatus: realtime.status,
+		useWsTransport,
+		connectRealtime,
+		disconnectRealtime,
+		sendAudioChunk,
+	};
 }

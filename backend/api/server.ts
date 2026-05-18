@@ -7,6 +7,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
 import { timingSafeEqual } from 'node:crypto';
+import clerkWebhookRouter from './webhooks/clerkWebhook';
+import { initWebSocketServer, getActiveConnectionCount } from './websocket';
 
 // Directory of this module. tsx (ESM): import.meta.url. Bundled server.cjs (Electron): Node's real __dirname — never use
 // process.cwd() here; packaged apps cwd is the exe folder, so ../../build would be wrong and the UI shows "Not Found".
@@ -18,6 +20,9 @@ const apiDir =
 
 import { analyzeQuotaMiddleware, authMiddleware, clerkAuthMiddleware, quotaMiddleware } from '../middleware/authMiddleware';
 import { apiBurstLimiter } from '../middleware/rateLimiter';
+import billingRoutes from './routes/billingRoutes';
+import { stripeWebhookHandler } from './webhooks/stripeWebhook';
+import adminRoutes from './routes/adminRoutes';
 import {
   recordVoiceUsage,
   recordChatUsage,
@@ -33,6 +38,13 @@ import { PLAN_LIMITS } from '../../shared/constants/planLimits';
 import { AuthRequest } from '../../shared/types';
 import { waitForDatabase, getPool, isDBConnected } from '../services/database';
 import {
+  checkApiBudget,
+  trackTranscriptionCost,
+  trackLLMCost,
+  getUserSpending,
+  getApiUsageBreakdown,
+} from '../services/apiCostTracker';
+import {
   buildAnswerConfidencePrompt,
   buildAnswerVerificationPrompt,
   buildCacheAnswerPrompt,
@@ -42,47 +54,18 @@ import {
   buildVoiceQuestionConfidencePrompt,
   buildVoiceSystemPrompt,
 } from '../../shared/prompts';
+import userRoutes from './routes/userRoutes';
+import {
+  lookupVectorCache,
+  getVectorCache,
+  clearVectorCache,
+  pushVectorCacheEntry,
+  setVectorCache,
+  createEmbedding,
+} from '../services/vectorCacheService';
 
 /** Written in dev when the HTTP server listens — Electron dev launcher reads this so it loads the same port (3000, 3001, …). */
 const interviewGuruDevPortFile = path.join(apiDir, '..', '..', '.interviewguru-dev-port');
-
-// ════════════════════════════════════════════════════════════════
-// VECTOR CACHE (Pre-Interview Generation to drastically reduce latency)
-// ════════════════════════════════════════════════════════════════
-let vectorCache: any[] = [];
-const CACHE_FILE = path.join(os.tmpdir(), 'interviewguru_cache.json');
-try {
-  if (fs.existsSync(CACHE_FILE)) {
-    vectorCache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
-    console.log(`Loaded ${vectorCache.length} cached answers from disk.`);
-  }
-} catch (e) {
-  console.log('No cache found or malformed.');
-}
-
-let extractor: any = null;
-/** Lazy-load @xenova/transformers so Vercel/serverless cold starts (e.g. /api/health) do not pull ML/WASM at import time. */
-async function getEmbedding(text: string): Promise<number[]> {
-  if (!extractor) {
-    const { pipeline, env } = await import('@xenova/transformers');
-    env.allowLocalModels = false;
-    extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
-  }
-  const output = await extractor(text, { pooling: 'mean', normalize: true });
-  return Array.from(output.data) as number[];
-}
-
-function cosineSimilarity(a: number[], b: number[]) {
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-}
 
 function extractJSON(content: string): any {
   if (!content) return {};
@@ -233,12 +216,6 @@ function analyzeFastMode(): boolean {
   return byokModeEnabled();
 }
 
-/** Embedding + Xenova model load can take seconds on first hit; skip in dev unless ANALYZE_VECTOR_CACHE=true. */
-function vectorCacheLookupEnabled(): boolean {
-  if (process.env.NODE_ENV === 'production') return true;
-  return truthyEnv(process.env.ANALYZE_VECTOR_CACHE);
-}
-
 /** When false in production, `x-api-key` is ignored unless BYOK_MODE or ALLOW_CLIENT_GROQ_KEY is on. */
 function isClientGroqKeyAllowed(): boolean {
   if (byokModeEnabled()) return true;
@@ -277,10 +254,32 @@ export async function startServer(): Promise<number | express.Express> {
   let initialPort = process.env.PORT ? parseInt(process.env.PORT) : 3000;
   const httpServer = createServer(app);
 
+  // Initialize WebSocket server for real-time streaming
+  initWebSocketServer(httpServer);
+  console.log('[Server] WebSocket server attached to /ws');
+
   const corsAllowlist = buildCorsAllowlist();
   if (corsAllowlist.size > 0) {
     console.log('[CORS] Allowlisted origins:', [...corsAllowlist].join(', '));
   }
+
+  // Clerk webhook route - must be registered BEFORE express.json() middleware
+  // Webhooks require raw body for signature verification
+  app.use(
+    '/api/webhooks/clerk',
+    express.raw({ type: 'application/json' }),
+    (req, res, next) => {
+      // Convert Buffer to string for webhook handler
+      if (Buffer.isBuffer(req.body)) {
+        req.body = req.body.toString('utf8');
+      }
+      next();
+    },
+    clerkWebhookRouter
+  );
+
+  // Stripe webhook needs raw body for signature verification - must be BEFORE json parser
+  app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), stripeWebhookHandler);
 
   const jsonBodyLimit = process.env.JSON_BODY_LIMIT?.trim() || '25mb';
   app.use(express.json({ limit: jsonBodyLimit }));
@@ -316,19 +315,19 @@ export async function startServer(): Promise<number | express.Express> {
       req.query.deep === 'true' ||
       truthyEnv(process.env.HEALTH_CHECK_DB);
     if (!deep) {
-      res.json({ status: 'ok' });
+      res.json({ status: 'ok', wsConnections: getActiveConnectionCount() });
       return;
     }
     if (!isDBConnected()) {
-      res.status(503).json({ status: 'degraded', db: 'not_connected' });
+      res.status(503).json({ status: 'degraded', db: 'not_connected', wsConnections: getActiveConnectionCount() });
       return;
     }
     try {
       await getPool()!.query('SELECT 1');
-      res.json({ status: 'ok', db: 'up' });
+      res.json({ status: 'ok', db: 'up', wsConnections: getActiveConnectionCount() });
     } catch (e: any) {
       console.error('[health] DB ping failed:', e?.message || e);
-      res.status(503).json({ status: 'error', db: 'down' });
+      res.status(503).json({ status: 'error', db: 'down', wsConnections: getActiveConnectionCount() });
     }
   });
 
@@ -372,6 +371,15 @@ export async function startServer(): Promise<number | express.Express> {
   app.use('/api', apiBurstLimiter);
   app.use('/api', authMiddleware);
 
+  // Billing routes
+  app.use('/api/billing', billingRoutes);
+
+  // User management routes (profile, settings, usage, billing, sessions, API keys)
+  app.use('/api/user', userRoutes);
+
+  // Admin routes (protected by adminMiddleware internally)
+  app.use('/api/admin', adminRoutes);
+
   function getGroq(customKey?: string) {
     const key = customKey || process.env.GROQ_API_KEY;
     if (!key) {
@@ -395,6 +403,22 @@ export async function startServer(): Promise<number | express.Express> {
       const { audioBase64, mimeType, audioChunkDuration } = req.body;
       if (!audioBase64) {
         return res.status(400).json({ error: "No audio provided" });
+      }
+
+      // Check API spending limit before processing
+      if (authReq.user && !clientGroqKeyFromRequest(req)) {
+        const audioMinutes = Math.ceil((audioChunkDuration || 5) / 60);
+        const estimatedCost = audioMinutes * 0.000667; // Whisper cost per minute
+        const budgetCheck = await checkApiBudget(authReq.user.userId, authReq.user.plan, estimatedCost);
+        
+        if (!budgetCheck.allowed) {
+          return res.status(402).json({
+            error: 'API spending limit exceeded',
+            code: 'api_budget_exceeded',
+            message: budgetCheck.message,
+            remainingBudgetUSD: budgetCheck.remainingBudget,
+          });
+        }
       }
 
       const ext = mimeType?.includes('mp4') ? 'mp4' : 'webm';
@@ -501,13 +525,19 @@ export async function startServer(): Promise<number | express.Express> {
         text = "";
       }
 
-      // Record voice usage if user authenticated
+      // Record voice usage and API cost if user authenticated
       if (authReq.user) {
         const voiceMinutes = Math.ceil((audioChunkDuration || 5) / 60);
         await recordVoiceUsage(authReq.user.userId, voiceMinutes);
+        
+        // Track API cost (skip if using BYOK key)
+        if (!clientGroqKeyFromRequest(req)) {
+          await trackTranscriptionCost(authReq.user.userId, voiceMinutes, customVoiceModel);
+        }
       }
 
       const remainingVoice = authReq.user ? await getRemainingQuota(authReq.user.userId, 'voice') : 0;
+      const spending = authReq.user ? await getUserSpending(authReq.user.userId, authReq.user.plan) : null;
 
       res.json({
         text,
@@ -515,6 +545,12 @@ export async function startServer(): Promise<number | express.Express> {
           voiceMinutesUsed: audioChunkDuration ? Math.ceil(audioChunkDuration / 60) : 0,
           remainingMinutes: remainingVoice,
         },
+        apiSpending: spending ? {
+          currentSpendUSD: spending.currentMonthSpendUSD,
+          maxSpendUSD: spending.maxSpendUSD,
+          remainingBudgetUSD: spending.remainingBudgetUSD,
+          percentUsed: spending.percentUsed,
+        } : null,
       });
     } catch (error: any) {
       console.error("Transcription error:", error);
@@ -557,81 +593,59 @@ export async function startServer(): Promise<number | express.Express> {
         return res.status(400).json({ error: "No transcript provided" });
       }
 
+      // Check API spending limit before processing (skip if using BYOK key)
+      if (authReq.user && !clientGroqKeyFromRequest(req)) {
+        const estimatedTokens = Math.ceil(transcript.length / 4) + 500;
+        const estimatedCost = (estimatedTokens / 1_000_000) * 0.05 + (300 / 1_000_000) * 0.08; // 8B model pricing
+        const budgetCheck = await checkApiBudget(authReq.user.userId, authReq.user.plan, estimatedCost);
+        
+        if (!budgetCheck.allowed) {
+          return res.status(402).json({
+            error: 'API spending limit exceeded',
+            code: 'api_budget_exceeded',
+            message: budgetCheck.message,
+            remainingBudgetUSD: budgetCheck.remainingBudget,
+          });
+        }
+      }
+
       // ════════════════════════════════════════════════════════════════
       // FAST LOOKUP — Vector Cache Match
       // ════════════════════════════════════════════════════════════════
       try {
-        if (
-          vectorCacheLookupEnabled() &&
-          vectorCache.length > 0 &&
-          (mode === 'chat' || mode === 'voice')
-        ) {
-          const emb = await getEmbedding(transcript);
-          
-          let topMatches = [];
-          for (const item of vectorCache) {
-            // Ignore items embedded with a different model if one changes down the line
-            if (item.embeddingModel && item.embeddingModel !== 'all-MiniLM-L6-v2') continue;
-            
-            let maxScore = cosineSimilarity(emb, item.embedding);
-            
-            // Check all variants for a potentially higher similarity hit
-            if (item.variantEmbeddings && Array.isArray(item.variantEmbeddings)) {
-              for (const varEmb of item.variantEmbeddings) {
-                const varScore = cosineSimilarity(emb, varEmb);
-                if (varScore > maxScore) {
-                  maxScore = varScore;
-                }
-              }
+        if (mode === 'chat' || mode === 'voice') {
+          const cacheHit = await lookupVectorCache(transcript, mode as 'voice' | 'chat');
+          if (cacheHit) {
+            const bestMatch = cacheHit;
+            if (mode === 'chat') {
+              return res.json({
+                isQuestion: true,
+                question: bestMatch.question,
+                confidence: 1.0,
+                type: bestMatch.answer.type || 'concept',
+                difficulty: bestMatch.answer.difficulty || 'medium',
+                sections: bestMatch.answer.sections || [],
+                code: bestMatch.answer.code || '',
+                codeLanguage: bestMatch.answer.codeLanguage || '',
+                bullets: [],
+                spoken: bestMatch.answer.spoken || '',
+              });
             }
-
-            topMatches.push({ item, score: maxScore });
-          }
-          
-          topMatches.sort((a, b) => b.score - a.score);
-          // Look at topK = 5
-          const bestMatches = topMatches.slice(0, 5);
-          
-          // Re-rank basic thresholding check logic
-          let bestMatch = null;
-          let bestScore = -1;
-          for (const match of bestMatches) {
-             if (match.score > bestScore) {
-                bestScore = match.score;
-                bestMatch = match.item;
-             }
-          }
-
-          // Optimal threshold for all-MiniLM-L6-v2 context variations
-          if (bestMatch && bestScore > 0.82) {
-             console.log(`[Cache HIT] Score: ${bestScore.toFixed(2)} | Q: ${bestMatch.question.substring(0, 40)}`);
-             if (mode === 'chat') {
-                 return res.json({
-                   isQuestion: true,
-                   question: bestMatch.question, // Re-map nicely to the clean generated question
-                   confidence: 1.0,
-                   type: bestMatch.answer.type || 'concept',
-                   difficulty: bestMatch.answer.difficulty || 'medium',
-                   sections: bestMatch.answer.sections || [],
-                   code: bestMatch.answer.code || "",
-                   codeLanguage: bestMatch.answer.codeLanguage || "",
-                   bullets: [],
-                   spoken: bestMatch.answer.spoken || "",
-                 });
-             } else {
-                 return res.json({
-                   isQuestion: true,
-                   question: bestMatch.question,
-                   confidence: 1.0,
-                   type: bestMatch.answer.type || 'technical',
-                   bullets: bestMatch.answer.bullets || bestMatch.answer.sections?.flatMap((s: any) => s.points || []) || [],
-                   spoken: bestMatch.answer.spoken || "I can definitely help with that.",
-                 });
-             }
+            return res.json({
+              isQuestion: true,
+              question: bestMatch.question,
+              confidence: 1.0,
+              type: bestMatch.answer.type || 'technical',
+              bullets:
+                bestMatch.answer.bullets ||
+                (bestMatch.answer.sections as { points?: string[] }[] | undefined)?.flatMap((s) => s.points || []) ||
+                [],
+              spoken: bestMatch.answer.spoken || 'I can definitely help with that.',
+            });
           }
         }
       } catch (e) {
-        console.error("Vector search failed, falling back to LLM", e);
+        console.error('Vector search failed, falling back to LLM', e);
       }
 
       // ════════════════════════════════════════════════════════════════
@@ -773,10 +787,19 @@ Rules:
           });
         }
 
-        // Record chat usage if user authenticated
+        // Record chat usage and API cost if user authenticated
         if (authReq.user) {
           await recordChatUsage(authReq.user.userId, 1);
+          
+          // Track LLM cost (skip if using BYOK key)
+          if (!clientGroqKeyFromRequest(req)) {
+            const inputTokens = Math.ceil(transcript.length / 4) + 500;
+            const outputTokens = JSON.stringify(chatData).length / 4;
+            await trackLLMCost(authReq.user.userId, chatModel, inputTokens, outputTokens);
+          }
         }
+
+        const chatSpending = authReq.user ? await getUserSpending(authReq.user.userId, authReq.user.plan) : null;
 
         return res.json({
           isQuestion: true,
@@ -789,6 +812,11 @@ Rules:
           codeLanguage: chatData.codeLanguage || chatData.language || "",
           bullets: [],
           spoken: chatData.spoken || "",
+          apiSpending: chatSpending ? {
+            currentSpendUSD: chatSpending.currentMonthSpendUSD,
+            remainingBudgetUSD: chatSpending.remainingBudgetUSD,
+            percentUsed: chatSpending.percentUsed,
+          } : null,
         });
       } else {
       // ════════════════════════════════════════════════════════════════
@@ -861,7 +889,28 @@ Rules:
            voiceData.isQuestion = false;
         }
         
-        return res.json(voiceData);
+        // Record chat usage and API cost if user authenticated (voice mode also counts as chat message)
+        if (authReq.user) {
+          await recordChatUsage(authReq.user.userId, 1);
+
+          // Track LLM cost (skip if using BYOK key)
+          if (!clientGroqKeyFromRequest(req)) {
+            const inputTokens = Math.ceil(transcript.length / 4) + 200;
+            const outputTokens = JSON.stringify(voiceData).length / 4;
+            await trackLLMCost(authReq.user.userId, selectedVoiceModel, inputTokens, outputTokens);
+          }
+        }
+
+        const voiceSpending = authReq.user ? await getUserSpending(authReq.user.userId, authReq.user.plan) : null;
+
+        return res.json({
+          ...voiceData,
+          apiSpending: voiceSpending ? {
+            currentSpendUSD: voiceSpending.currentMonthSpendUSD,
+            remainingBudgetUSD: voiceSpending.remainingBudgetUSD,
+            percentUsed: voiceSpending.percentUsed,
+          } : null,
+        });
       }
 
     } catch (error: any) {
@@ -1048,7 +1097,7 @@ Rules:
       }
       
       console.log(`[Cache] Found ${questions.length} questions. Generating answers & embeddings...`);
-      vectorCache = []; // clear old cache
+      clearVectorCache();
 
       // Step 2: Generate Answers & Embeddings
       // Run sequentially to keep Groq happy, but fast because 8b model
@@ -1078,14 +1127,14 @@ Rules:
             const variantEmbeddings: number[][] = [];
             for (const variant of variants) {
                 if (typeof variant === 'string' && variant.trim().length > 5) {
-                    const varEmb = await getEmbedding(variant);
+                    const varEmb = await createEmbedding(variant);
                     variantEmbeddings.push(varEmb);
                 }
             }
 
             // Create a single unique entry for the MAIN QUESTION + VARIANTS
-            const emb = await getEmbedding(q);
-            vectorCache.push({
+            const emb = await createEmbedding(q);
+            pushVectorCacheEntry({
                id: Math.random().toString(36).substring(7),
                question: q,
                embeddingModel: "all-MiniLM-L6-v2",
@@ -1101,14 +1150,14 @@ Rules:
          }
       }
 
-      // Step 3: Write out buffer to cache file
-      fs.writeFileSync(CACHE_FILE, JSON.stringify(vectorCache));
-      console.log(`[Cache] Success! ${vectorCache.length} questions are now primed natively in vector cache.`);
+      setVectorCache(getVectorCache());
+      const cacheCount = getVectorCache().length;
+      console.log(`[Cache] Success! ${cacheCount} questions are now primed natively in vector cache.`);
 
       await recordChatUsage(authReq.user!.userId, 8);
 
       // Return success response to frontend
-      res.json({ status: `Successfully cached ${vectorCache.length} questions!` });
+      res.json({ status: `Successfully cached ${cacheCount} questions!` });
     } catch(err: any) {
       console.error("[Cache] Background generation failed pipeline:", err);
       res.status(500).json({ status: "Generation failed", error: err.message });
@@ -1162,6 +1211,10 @@ Rules:
       const planConfig = PLAN_LIMITS[user.plan] ?? PLAN_LIMITS.free;
       const limits = effectiveQuotaLimits(user.plan);
 
+      // Get API spending info
+      const spending = await getUserSpending(authReq.user.userId, user.plan);
+      const apiBreakdown = await getApiUsageBreakdown(authReq.user.userId);
+
       const response = {
         user: {
           userId: user.userId,
@@ -1189,7 +1242,23 @@ Rules:
             percentUsed: pct(user.sessionsUsed, limits.sessionsLimit),
           },
         },
+        apiSpending: {
+          currentSpendUSD: spending.currentMonthSpendUSD,
+          maxSpendUSD: spending.maxSpendUSD,
+          remainingBudgetUSD: spending.remainingBudgetUSD,
+          percentUsed: spending.percentUsed,
+          breakdown: {
+            transcription: apiBreakdown.transcription,
+            llm: apiBreakdown.llm,
+            total: apiBreakdown.total,
+          },
+        },
         features: planConfig.features,
+        planDetails: {
+          sessionsPerMonth: planConfig.sessionsPerMonth,
+          sessionDurationMinutes: planConfig.sessionDurationMinutes,
+          priceINR: planConfig.priceINR,
+        },
         currentMonth: user.currentMonth,
         trialDaysRemaining: 0,
       };

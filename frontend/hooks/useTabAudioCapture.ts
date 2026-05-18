@@ -5,13 +5,13 @@ import { useApiAuthHeaders } from '../providers/ApiAuthContext';
 import { getElectronIpc } from '../utils/electronIpc';
 
 function clampChunkMs(raw: number): number {
-	if (!Number.isFinite(raw)) return 5000;
-	return Math.min(Math.max(Math.round(raw), 2000), 15000);
+	if (!Number.isFinite(raw)) return 1500;
+	return Math.min(Math.max(Math.round(raw), 1000), 15000);
 }
 
 /** Read from localStorage on each chunk so changes apply after Save without reload. */
 function getVoiceChunkMs(): number {
-	const v = parseInt(localStorage.getItem('voice_chunk_ms') || '5000', 10);
+	const v = parseInt(localStorage.getItem('voice_chunk_ms') || '1500', 10);
 	return clampChunkMs(v);
 }
 
@@ -19,7 +19,20 @@ function shouldSkipSilentChunks(): boolean {
 	return localStorage.getItem('voice_skip_silent') !== 'false';
 }
 
-export function useTabAudioCapture(onTranscriptUpdate: (text: string) => void, onError?: (msg: string) => void) {
+const REALTIME_CHUNK_MS = 200;
+
+export interface TabAudioCaptureOptions {
+	/** Send 200ms chunks over WebSocket instead of HTTP /api/transcribe */
+	realtimeMode?: boolean;
+	sendAudioChunk?: (base64: string, mimeType: string) => boolean;
+}
+
+export function useTabAudioCapture(
+	onTranscriptUpdate: (text: string) => void,
+	onError?: (msg: string) => void,
+	captureOptions?: TabAudioCaptureOptions
+) {
+	const { realtimeMode = false, sendAudioChunk } = captureOptions ?? {};
 	const getAuthHeaders = useApiAuthHeaders();
 	const [isListening, setIsListening] = useState(false);
 	const [isRateLimited, setIsRateLimited] = useState(false);
@@ -34,6 +47,15 @@ export function useTabAudioCapture(onTranscriptUpdate: (text: string) => void, o
 		if (autoClearTimerRef.current) {
 			clearTimeout(autoClearTimerRef.current);
 		}
+	}, []);
+
+	const appendTranscript = useCallback((text: string) => {
+		const trimmed = text?.trim();
+		if (!trimmed || trimmed.length <= 2) return;
+		setTranscript((prev) => {
+			const next = prev + (prev ? ' ' : '') + trimmed;
+			return next.length > 2000 ? next.slice(-2000) : next;
+		});
 	}, []);
 
 	const stopListening = useCallback(() => {
@@ -124,7 +146,7 @@ export function useTabAudioCapture(onTranscriptUpdate: (text: string) => void, o
 				}
 
 				const recorder = new MediaRecorder(audioStream, options);
-				const chunkMs = getVoiceChunkMs();
+				const chunkMs = realtimeMode ? REALTIME_CHUNK_MS : getVoiceChunkMs();
 				let chunkHadSpeech = false;
 				const rmsThreshold = 0.028;
 
@@ -150,6 +172,10 @@ export function useTabAudioCapture(onTranscriptUpdate: (text: string) => void, o
 						reader.onloadend = async () => {
 							const base64data = (reader.result as string).split(',')[1];
 							const mimeType = recorder.mimeType || 'audio/webm';
+
+							if (realtimeMode && sendAudioChunk?.(base64data, mimeType)) {
+								return;
+							}
 
 							try {
 								const voiceModel = localStorage.getItem('groq_voice_model') || 'whisper-large-v3-turbo';
@@ -242,7 +268,16 @@ export function useTabAudioCapture(onTranscriptUpdate: (text: string) => void, o
 			stopListening();
 			if (onError) onError(`Audio capture failed: ${err.message || err.name || 'Unknown error'}`);
 		}
-	}, [onTranscriptUpdate, stopListening, clearTranscript, onError, getAuthHeaders]);
+	}, [onTranscriptUpdate, stopListening, clearTranscript, onError, getAuthHeaders, realtimeMode, sendAudioChunk]);
 
-	return { isListening, isRateLimited, transcript, startListening, stopListening, clearTranscript, stream: streamRef.current };
+	return {
+		isListening,
+		isRateLimited,
+		transcript,
+		startListening,
+		stopListening,
+		clearTranscript,
+		appendTranscript,
+		stream: streamRef.current,
+	};
 }
